@@ -2,10 +2,20 @@ import cv2
 import pytesseract
 import numpy as np
 import re
+import os
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+# On Linux containers/servers, tesseract-ocr installed via apt is already
+# on PATH, so pytesseract finds it automatically -- no override needed.
+# On Windows dev machines it usually isn't, so allow pointing at it via
+# an env var (falls back to the common default install path).
+_tesseract_cmd = os.environ.get("TESSERACT_CMD")
+
+if _tesseract_cmd:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
+elif os.name == "nt":
+    pytesseract.pytesseract.tesseract_cmd = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
 
 
 class OCREngine:

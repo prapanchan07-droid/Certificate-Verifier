@@ -1,17 +1,22 @@
 FROM python:3.10-slim
-
-# Install external native computer vision and system dependencies for OpenCV/PyZbar
+# Install external native computer vision and system dependencies for
+# OpenCV/PyZbar, plus Tesseract (OCR) and Poppler (PDF -> image), which
+# the app relies on but the original image didn't include.
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
     zlib1g \
-    libbarbican1 \
     zbar-tools \
+    tesseract-ocr \
+    tesseract-ocr-tam \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render/Railway/Fly/Cloud Run set $PORT for you; default to 8000 for
+# local docker run.
+ENV PORT=8000
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

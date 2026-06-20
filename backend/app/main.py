@@ -5,6 +5,7 @@ from app.core.official_verifier import OfficialVerifier
 
 import cv2
 import numpy as np
+import os
 
 from pdf2image import convert_from_bytes
 
@@ -13,9 +14,14 @@ from app.core.ocr_engine import OCREngine
 from app.core.qr_engine import QREngine
 from app.core.report_generator import generate_pdf_report
 app = FastAPI(title="AI Verification Portal Architecture")
+ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,10 +54,15 @@ async def verify_certificate(file: UploadFile = File(...)):
 
         if file.filename.lower().endswith(".pdf"):
 
+            poppler_path = os.environ.get("POPPLER_PATH")  # None on Linux
+            # containers where poppler-utils is installed system-wide and
+            # already on PATH; set this env var only on Windows dev boxes
+            # where poppler isn't installed globally.
+
             pages = convert_from_bytes(
                 contents,
                 dpi=300,
-                poppler_path=r"C:\Users\vshar\Downloads\Release-26.02.0-0\poppler-26.02.0\Library\bin"
+                poppler_path=poppler_path
             )
             print("PDF CONVERTED")
 
@@ -127,7 +138,7 @@ async def verify_certificate(file: UploadFile = File(...)):
                                        # expired SSL cert, etc.) -- distinct
                                        # from "compared and didn't match".
 
-        if qr_results.get("data"):
+        if qr_results.get("data") and qr_results.get("domain_authenticity"):
 
             print("QR URL =", qr_results["data"])
             print("OFFICIAL VERIFIER STARTED")
@@ -180,6 +191,10 @@ async def verify_certificate(file: UploadFile = File(...)):
 
         else:
 
+            # Either no QR data at all, or the QR points at a domain
+            # that isn't on our allowlist -- we deliberately never fetch
+            # an unverified URL (prevents a malicious QR code from being
+            # used to make this server request arbitrary/internal URLs).
             comparison = None
         
         template = cv2.imread(
@@ -302,7 +317,7 @@ async def verify_certificate(file: UploadFile = File(...)):
     ),
     "error": (
         official_data.get("error")
-        if qr_results.get("data") and not official_data.get("success")
+        if official_unavailable and "official_data" in locals()
         else None
     )
 }
