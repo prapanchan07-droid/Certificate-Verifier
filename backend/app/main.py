@@ -61,7 +61,7 @@ async def verify_certificate(file: UploadFile = File(...)):
 
             pages = convert_from_bytes(
                 contents,
-                dpi=300,
+                dpi=150,
                 poppler_path=poppler_path
             )
             print("PDF CONVERTED")
