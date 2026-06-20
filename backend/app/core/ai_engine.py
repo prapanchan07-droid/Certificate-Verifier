@@ -7,7 +7,22 @@ class AIVerificationEngine:
         self.template_path = template_path
         self.orb = cv2.ORB_create(nfeatures=2000)
 
+    def _resize_for_processing(self, img, max_dim=1000):
+        """Downscale large images before heavy CV operations to control memory usage."""
+        h, w = img.shape[:2]
+        scale = max_dim / max(h, w)
+        if scale < 1:
+            img = cv2.resize(
+                img,
+                (int(w * scale), int(h * scale)),
+                interpolation=cv2.INTER_AREA
+            )
+        return img
+
     def align_to_template(self, input_img, template_img):
+
+        input_img = self._resize_for_processing(input_img)
+        template_img = self._resize_for_processing(template_img)
 
         gray_input = cv2.cvtColor(
             input_img,
@@ -88,6 +103,7 @@ class AIVerificationEngine:
 
     def calculate_tamper_score(self, input_img, template_img):
         """Calculates structural variation to identify anomaly/tampering locations."""
+        template_img = self._resize_for_processing(template_img)
         aligned = self.align_to_template(input_img, template_img)
         if aligned is None:
             return 0.0, 1.0  # No structural match -> High tampering probability
