@@ -67,6 +67,8 @@ async def verify_certificate(file: UploadFile = File(...)):
             print("PDF CONVERTED")
 
             page = np.array(pages[0])
+            
+            del pages
 
             img = cv2.cvtColor(
                 page,
@@ -93,6 +95,19 @@ async def verify_certificate(file: UploadFile = File(...)):
                 nparr,
                 cv2.IMREAD_COLOR
             )
+            
+        # ==========================
+        # RESIZE LARGE IMAGES
+        # ==========================
+        h, w = img.shape[:2]
+
+        if w > 1200:
+            scale = 1200 / w
+
+            img = cv2.resize(
+                img,
+                (int(w * scale), int(h * scale))
+            )
 
         # ==========================
         # INVALID FILE CHECK
@@ -118,16 +133,16 @@ async def verify_certificate(file: UploadFile = File(...)):
             ".png",
             img
         )
-        
-        if not success:
-            raise Exception(
-                "Failed to encode image"
-            )
 
         ocr_results = ocr_engine.extract_details(
             encoded.tobytes()
         )
-        
+
+        del encoded
+
+        import gc
+        gc.collect()
+
         print("OCR RESULTS")
         print(ocr_results)
         
