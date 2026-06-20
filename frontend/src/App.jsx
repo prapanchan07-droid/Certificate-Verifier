@@ -15,7 +15,7 @@ export default function App() {
           <div className="flex items-center gap-3">
             <SealMark />
             <div>
-              <h1 className="font-display text-2xl text-ink leading-none">Attest</h1>
+              <h1 className="font-display text-2xl text-ink leading-none">CertifyX</h1>
               <p className="text-xs text-ink-soft tracking-wide mt-0.5">Certificate Verification</p>
             </div>
           </div>

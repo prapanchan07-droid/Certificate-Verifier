@@ -121,6 +121,11 @@ async def verify_certificate(file: UploadFile = File(...)):
         print(ocr_results)
         
         official_score = 0
+        official_unavailable = False  # True only when a QR was found but
+                                       # the official record could not be
+                                       # reached/compared (network error,
+                                       # expired SSL cert, etc.) -- distinct
+                                       # from "compared and didn't match".
 
         if qr_results.get("data"):
 
@@ -163,10 +168,15 @@ async def verify_certificate(file: UploadFile = File(...)):
 
                     comparison = None
                     official_score = 0
+                    official_unavailable = True
 
             else:
 
+                # Official site could not be reached (network error,
+                # expired SSL cert, timeout, etc.) -- we genuinely don't
+                # know if the certificate is real or fake here.
                 comparison = None
+                official_unavailable = True
 
         else:
 
@@ -220,22 +230,44 @@ async def verify_certificate(file: UploadFile = File(...)):
         if ocr_results.get("institution"):
             ocr_score += 0.25
 
-        confidence = int(
-        (
-            ai_score * 0.10
-            + (1 - tamper_score) * 0.10
-            + (1.0 if qr_authentic else 0.0) * 0.20
-            + official_score * 0.60
-        ) * 100
-        )
-        
-        if comparison and comparison["score"] == 100:
-            confidence = 95
+        if official_unavailable:
+
+            # The official record was never actually compared, so don't
+            # let its 60% weight collapse confidence to near-zero as if
+            # the document had failed verification. Reweight across the
+            # signals we do have.
+            confidence = int(
+            (
+                ai_score * 0.30
+                + (1 - tamper_score) * 0.30
+                + (1.0 if qr_authentic else 0.0) * 0.40
+            ) * 100
+            )
+
+        else:
+
+            confidence = int(
+            (
+                ai_score * 0.10
+                + (1 - tamper_score) * 0.10
+                + (1.0 if qr_authentic else 0.0) * 0.20
+                + official_score * 0.60
+            ) * 100
+            )
+
+            if comparison and comparison["score"] == 100:
+                confidence = 95
             
         # ==========================
         # FINAL DECISION
         # ==========================
-        if official_score >= 0.8 and qr_authentic:
+        if official_unavailable:
+
+            # We genuinely don't know -- the official source couldn't be
+            # reached, so we shouldn't call this FAKE or GENUINE.
+            final_verdict = "UNVERIFIED"
+
+        elif official_score >= 0.8 and qr_authentic:
             final_verdict = "GENUINE"
 
         elif confidence < 50:
@@ -262,7 +294,17 @@ async def verify_certificate(file: UploadFile = File(...)):
             "qr_verification": qr_results,
             "official_verification": {
     "score": comparison["score"] if comparison else 0,
-    "checks": comparison["checks"] if comparison else {}
+    "checks": comparison["checks"] if comparison else {},
+    "status": (
+        "UNAVAILABLE" if official_unavailable
+        else "MATCHED" if comparison
+        else "NOT_CHECKED"
+    ),
+    "error": (
+        official_data.get("error")
+        if qr_results.get("data") and not official_data.get("success")
+        else None
+    )
 }
         }
 
