@@ -9,6 +9,10 @@ class AIVerificationEngine:
         self.template_path = template_path
         self.orb = cv2.ORB_create(nfeatures=2000)
 
+    # ------------------------------------------------------------------
+    # 1. DESKEW — images only, not PDFs
+    # ------------------------------------------------------------------
+
     def deskew(self, img: np.ndarray) -> np.ndarray:
         try:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -55,18 +59,31 @@ class AIVerificationEngine:
             print("DESKEW ERROR:", e)
             return img
 
-    def enhance(self, img: np.ndarray) -> np.ndarray:
+    # ------------------------------------------------------------------
+    # 2. ENHANCE — skip upscale for PDFs (already large enough)
+    # ------------------------------------------------------------------
+
+    def enhance(self, img: np.ndarray, is_pdf: bool = False) -> np.ndarray:
         try:
-            h, w = img.shape[:2]
-            up = cv2.resize(img, (int(w * 1.5), int(h * 1.5)),
-                            interpolation=cv2.INTER_CUBIC)
-            blurred = cv2.GaussianBlur(up, (0, 0), sigmaX=2)
-            sharpened = cv2.addWeighted(up, 1.5, blurred, -0.5, 0)
-            print("ENHANCE: unsharp mask done")
+            if not is_pdf:
+                h, w = img.shape[:2]
+                img = cv2.resize(
+                    img,
+                    (int(w * 1.5), int(h * 1.5)),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+
+            blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=2)
+            sharpened = cv2.addWeighted(img, 1.5, blurred, -0.5, 0)
+            print("ENHANCE: done")
             return sharpened
         except Exception as e:
             print("ENHANCE ERROR:", e)
             return img
+
+    # ------------------------------------------------------------------
+    # 3. ALIGN — ORB + homography
+    # ------------------------------------------------------------------
 
     def align_to_template(self, input_img: np.ndarray, template_img: np.ndarray):
         gray_input = cv2.cvtColor(input_img, cv2.COLOR_BGR2GRAY)
@@ -97,6 +114,10 @@ class AIVerificationEngine:
         h, w = gray_template.shape
         return cv2.warpPerspective(input_img, M, (w, h))
 
+    # ------------------------------------------------------------------
+    # 4. TAMPER SCORE — SSIM + ELA + Laplacian
+    # ------------------------------------------------------------------
+
     def calculate_tamper_score(self, input_img: np.ndarray, template_img: np.ndarray):
         aligned = self.align_to_template(input_img, template_img)
         if aligned is None:
@@ -117,7 +138,9 @@ class AIVerificationEngine:
         ela_penalty = min(ela_mean / 10.0, 0.3)
         lap_bonus = min(lap_var / 5000.0, 0.1)
 
-        tamper = float(np.clip((1.0 - ssim_score) + ela_penalty - lap_bonus, 0.0, 1.0))
+        tamper = float(np.clip(
+            (1.0 - ssim_score) + ela_penalty - lap_bonus, 0.0, 1.0
+        ))
         ai_score = float(np.clip(1.0 - tamper, 0.0, 1.0))
 
         print(f"TAMPER: ssim={ssim_score:.3f} ela={ela_mean:.2f} → tamper={tamper:.3f}")
