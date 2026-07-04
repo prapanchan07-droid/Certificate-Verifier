@@ -2,6 +2,21 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
+_BOARD_NOISE = [
+    "STATE BOARD OF SCHOOL EXAMINATIONS",
+    "DEPARTMENT OF GOVERNMENT EXAMINATIONS",
+    "SECONDARY SCHOOL LEAVING CERTIFICATE",
+    "HIGHER SECONDARY COURSE",
+    "ISSUED UNDER THE AUTHORITY",
+    "GOVERNMENT OF TAMILNADU",
+    "GOVERNMENT OF TAMIL NADU",
+    "PROVISIONAL CERTIFICATE",
+    "X STANDARD",
+]
+
+_SCHOOL_KEYWORDS = ["GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
+                    "MATRICULATION", "AIDED", "SCHOOL", "COLLEGE"]
+
 
 class OfficialVerifier:
 
@@ -29,7 +44,7 @@ class OfficialVerifier:
             if m:
                 result["roll_no"] = m.group()
 
-            # Register number — SSLC J-prefix, HSC 10-digit perm reg, or alpha+digit
+            # Register number
             m = re.search(r"\bJ\d{7}\b", page_text)
             if m:
                 result["reg_no"] = m.group()
@@ -51,25 +66,40 @@ class OfficialVerifier:
             m = re.search(
                 r"NAME OF THE CANDIDATE\s+([A-Z][A-Z\s]{2,40}?)\s+"
                 r"(APR|MAR|OCT|NOV|DEC|JAN|FEB)\s+\d{4}",
-                page_text,
-                re.DOTALL,
+                page_text, re.DOTALL,
             )
             if m:
                 result["candidate_name"] = m.group(1).strip()
             else:
                 m = re.search(
                     r"NAME OF THE CANDIDATE.*?([A-Z]+\s+[A-Z]+(?:\s+[A-Z]+)?)",
-                    page_text,
-                    re.DOTALL,
+                    page_text, re.DOTALL,
                 )
                 if m:
                     result["candidate_name"] = m.group(1).strip()
 
-            # Institution — school name on the official page
-            for line in page_text.split(" . "):
-                if any(kw in line for kw in ("SCHOOL", "COLLEGE", "HR SEC")):
-                    result["institution"] = line.strip()
-                    break
+            # Institution — find actual school name, skip board headers
+            lines = page_text.split(" . ")
+
+            # First try: anchor on "NAME OF THE SCHOOL"
+            for i, line in enumerate(lines):
+                if "NAME OF THE SCHOOL" in line:
+                    for j in range(i, min(i + 3, len(lines))):
+                        seg = lines[j].strip()
+                        if any(kw in seg for kw in _SCHOOL_KEYWORDS) and \
+                           not any(noise in seg for noise in _BOARD_NOISE):
+                            result["institution"] = seg
+                            break
+                    if result["institution"]:
+                        break
+
+            # Fallback: any school-keyword line not in noise list
+            if not result["institution"]:
+                for line in lines:
+                    if any(kw in line for kw in _SCHOOL_KEYWORDS) and \
+                       not any(noise in line for noise in _BOARD_NOISE):
+                        result["institution"] = line.strip()
+                        break
 
             print("OFFICIAL DATA EXTRACTED:", result)
             return result
@@ -87,21 +117,21 @@ class OfficialVerifier:
         score = 0
         checks = {}
 
-        # --- Roll number ---
+        # Roll number
         ocr_roll = self.clean_text(ocr_data.get("roll_no"))
         off_roll = self.clean_text(official_data.get("roll_no"))
         checks["roll_no_match"] = ocr_roll == off_roll and bool(ocr_roll)
         if checks["roll_no_match"]:
             score += 20
 
-        # --- Register number ---
+        # Register number
         ocr_reg = self.clean_text(ocr_data.get("reg_no"))
         off_reg = self.clean_text(official_data.get("reg_no"))
         checks["reg_no_match"] = ocr_reg == off_reg and bool(ocr_reg)
         if checks["reg_no_match"]:
             score += 20
 
-        # --- Candidate name ---
+        # Candidate name
         ocr_name = self.clean_text(ocr_data.get("candidate_name"))
         off_name = self.clean_text(official_data.get("candidate_name"))
         checks["candidate_name_match"] = bool(ocr_name) and (
@@ -110,35 +140,27 @@ class OfficialVerifier:
         if checks["candidate_name_match"]:
             score += 20
 
-        # --- Total marks ---
+        # Total marks
         ocr_marks = self.clean_text(ocr_data.get("total_marks"))
         off_marks = self.clean_text(official_data.get("total_marks"))
         checks["total_marks_match"] = ocr_marks == off_marks and bool(ocr_marks)
         if checks["total_marks_match"]:
             score += 20
 
-        # --- Institution: compare actual school names, not just header ---
+        # Institution — compare actual school names
         ocr_inst = re.sub(r"^\d+\s*", "", self.clean_text(ocr_data.get("institution")))
         off_inst = self.clean_text(official_data.get("institution"))
 
-        # Strip the board header that appears on every page so it doesn't
-        # inflate the score when both sides have "STATE BOARD…"
-        def _strip_board(s):
-            return re.sub(r"STATE BOARD OF SCHOOL EXAMINATIONS[,\s]*", "", s).strip()
-
-        ocr_school = _strip_board(ocr_inst)
-        off_school = _strip_board(off_inst)
-
-        if ocr_school and off_school:
-            checks["institution_match"] = (
-                ocr_school in off_school or off_school in ocr_school
-            )
+        if ocr_inst and off_inst:
+            # Partial match — school names often have OCR noise
+            ocr_words = set(ocr_inst.split())
+            off_words = set(off_inst.split())
+            common = ocr_words & off_words
+            # Need at least 2 meaningful words in common
+            meaningful = {w for w in common if len(w) > 3}
+            checks["institution_match"] = len(meaningful) >= 2
         else:
-            # If one side is missing, give partial credit if either has "STATE BOARD"
-            checks["institution_match"] = (
-                "STATE BOARD OF SCHOOL EXAMINATIONS" in ocr_inst
-                or "STATE BOARD OF SCHOOL EXAMINATIONS" in off_inst
-            )
+            checks["institution_match"] = False
 
         if checks["institution_match"]:
             score += 20
