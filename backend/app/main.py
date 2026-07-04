@@ -16,10 +16,6 @@ from app.core.report_generator import generate_pdf_report
 
 app = FastAPI(title="CertifyX — Certificate Verification API")
 
-@app.get("/")
-def health():
-    return {"status": "ok", "service": "CertifyX"}
-
 ALLOWED_ORIGINS = os.environ.get(
     "ALLOWED_ORIGINS",
     "http://localhost:5173"
@@ -38,11 +34,15 @@ ocr_engine = OCREngine()
 qr_engine = QREngine()
 official_verifier = OfficialVerifier()
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
-# Resolve template path relative to this file so it works regardless of cwd
 _HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.path.join(_HERE, "..", "templates", "tn_10th_template.png")
+
+
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "CertifyX"}
 
 
 @app.post("/api/verify")
@@ -52,13 +52,9 @@ async def verify_certificate(file: UploadFile = File(...)):
 
     contents = await file.read()
 
-    # ==========================
-    # FILE SIZE GUARD
-    # ==========================
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 20 MB).")
 
-    # Initialise so the error block can always reference them safely
     official_data: dict = {}
     comparison = None
     official_score = 0.0
@@ -70,12 +66,12 @@ async def verify_certificate(file: UploadFile = File(...)):
         # PDF → IMAGE
         # ===============================
         if file.filename.lower().endswith(".pdf"):
-            # poppler_path=None works on Linux where poppler-utils is on PATH
             poppler_path = os.environ.get("POPPLER_PATH")
-            pages = convert_from_bytes(contents, dpi=250, poppler_path=poppler_path)
+            pages = convert_from_bytes(contents, dpi=150, poppler_path=poppler_path)
             print("PDF CONVERTED — pages:", len(pages))
             page = np.array(pages[0])
             img = cv2.cvtColor(page, cv2.COLOR_RGB2BGR)
+            is_pdf = True
 
         # ===============================
         # IMAGE
@@ -83,19 +79,23 @@ async def verify_certificate(file: UploadFile = File(...)):
         else:
             nparr = np.frombuffer(contents, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            is_pdf = False
 
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid or unreadable file.")
 
-        # ===============================
-        # DESKEW / ANGLE CORRECTION
-        # ===============================
-        img = ai_engine.deskew(img)
+        print("IMAGE SIZE:", img.shape)
 
         # ===============================
-        # CNN ENHANCEMENT
+        # DESKEW (images only, not PDFs)
         # ===============================
-        img = ai_engine.enhance(img)
+        if not is_pdf:
+            img = ai_engine.deskew(img)
+
+        # ===============================
+        # ENHANCE
+        # ===============================
+        img = ai_engine.enhance(img, is_pdf=is_pdf)
 
         # ==========================
         # QR SCAN
