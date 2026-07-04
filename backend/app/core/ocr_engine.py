@@ -12,6 +12,19 @@ elif os.name == "nt":
 
 _SESSIONS = r"(APR|MAR|OCT|NOV|DEC|JAN|FEB)"
 
+# These are header lines that appear on every certificate — not the school name
+_BOARD_NOISE = [
+    "STATE BOARD OF SCHOOL EXAMINATIONS",
+    "DEPARTMENT OF GOVERNMENT EXAMINATIONS",
+    "SECONDARY SCHOOL LEAVING CERTIFICATE",
+    "HIGHER SECONDARY COURSE",
+    "ISSUED UNDER THE AUTHORITY",
+    "GOVERNMENT OF TAMILNADU",
+    "GOVERNMENT OF TAMIL NADU",
+    "PROVISIONAL CERTIFICATE",
+    "X STANDARD",
+]
+
 
 class OCREngine:
 
@@ -101,6 +114,42 @@ class OCREngine:
             return m.group(1).strip()
         return None
 
+    def _extract_institution(self, lines: list) -> str | None:
+        """
+        Extract the actual school/college name.
+        Strategy: find the line after 'NAME OF THE SCHOOL' label,
+        or find a line with school keywords that is NOT a board header.
+        """
+        # Strategy 1: look for 'NAME OF THE SCHOOL' anchor then grab next non-empty line
+        for i, line in enumerate(lines):
+            if "NAME OF THE SCHOOL" in line or "பள்ளியின் பெயர்" in line:
+                # The school name is usually on the next 1-2 lines
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    candidate = lines[j].strip()
+                    candidate = re.sub(r"^\d+\s*", "", candidate)
+                    candidate = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", candidate).strip()
+                    if len(candidate) > 5 and not any(
+                        noise in candidate for noise in _BOARD_NOISE
+                    ):
+                        return candidate
+                break
+
+        # Strategy 2: find a school/college line that isn't board header noise
+        school_keywords = ["GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
+                           "MATRICULATION", "CBSE", "AIDED", "SCHOOL", "COLLEGE"]
+        for line in lines:
+            upper = line.strip().upper()
+            if not any(kw in upper for kw in school_keywords):
+                continue
+            if any(noise in upper for noise in _BOARD_NOISE):
+                continue
+            # Must be reasonably long and look like a school name
+            cleaned = re.sub(r"^\d+\s*", "", upper).strip()
+            if len(cleaned) > 8:
+                return cleaned
+
+        return None
+
     def extract_details(self, img_bytes: bytes) -> dict:
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)
@@ -110,8 +159,7 @@ class OCREngine:
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            # PSM 1 = automatic page segmentation with OSD
-            # Best for full certificate pages
+            # Single PSM 1 pass — auto page segmentation, best for certificates
             text_dump = pytesseract.image_to_string(
                 gray, lang="eng+tam", config="--psm 1"
             )
@@ -131,29 +179,10 @@ class OCREngine:
 
             # ---------- ROLL NUMBER ----------
             extracted["roll_no"] = self._extract_roll_no(text_dump, lines)
-
             if not extracted["roll_no"]:
                 m = re.search(r"\b\d{7}\b", text_dump)
                 if m:
                     extracted["roll_no"] = m.group(0)
-
-            # Try other PSM modes if still missing
-            if not extracted["roll_no"]:
-                for psm in ("--psm 6", "--psm 4", "--psm 11"):
-                    rt = self._normalize_tamil_digits(
-                        pytesseract.image_to_string(
-                            gray, lang="eng+tam", config=psm
-                        ).upper()
-                    )
-                    rl = [l for l in rt.split("\n") if l.strip()]
-                    roll = self._extract_roll_no(rt, rl)
-                    if not roll:
-                        m2 = re.search(r"\b\d{7}\b", rt)
-                        if m2:
-                            roll = m2.group(0)
-                    if roll:
-                        extracted["roll_no"] = roll
-                        break
 
             # ---------- REGISTER NUMBER ----------
             m = re.search(r"\bJ\d{7}\b", text_dump)
@@ -177,14 +206,7 @@ class OCREngine:
             extracted["candidate_name"] = self._extract_candidate_name(text_dump)
 
             # ---------- INSTITUTION ----------
-            keywords = ["SCHOOL", "COLLEGE", "HR SEC", "MATRIC", "INSTITUTION"]
-            for line in lines:
-                if any(kw in line for kw in keywords):
-                    inst = re.sub(r"^\d+\s*", "", line.strip())
-                    inst = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", inst).strip()
-                    if inst:
-                        extracted["institution"] = inst
-                        break
+            extracted["institution"] = self._extract_institution(lines)
 
             print("OCR FINAL:", extracted)
             return extracted
