@@ -12,6 +12,3 @@ requests==2.31.0
 beautifulsoup4==4.12.3
 pyzbar==0.1.9
 pillow==10.2.0
-torch==2.2.2+cpu
-torchvision==0.17.2+cpu
---extra-index-url https://download.pytorch.org/whl/cpu
