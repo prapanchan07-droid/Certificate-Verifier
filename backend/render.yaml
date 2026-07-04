@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: certifyx-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://certifyx.vercel.app   # ← replace with your Vercel URL
+      - key: POPPLER_PATH
+        value: ""   # empty = use system poppler (installed via apt in Dockerfile)
+    healthCheckPath: /docs
+    autoDeploy: true

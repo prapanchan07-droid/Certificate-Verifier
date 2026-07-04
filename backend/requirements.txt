@@ -1,0 +1,17 @@
+fastapi==0.110.0
+uvicorn==0.28.0
+opencv-python-headless==4.9.0.80
+scikit-image==0.22.0
+pytesseract==0.3.10
+pdf2image==1.17.0
+reportlab==4.1.0
+pydantic==2.6.4
+python-multipart==0.0.9
+numpy==1.26.4
+requests==2.31.0
+beautifulsoup4==4.12.3
+pyzbar==0.1.9
+pillow==10.2.0
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
