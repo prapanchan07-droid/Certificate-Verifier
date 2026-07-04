@@ -42,3 +42,8 @@ export default function App() {
     </div>
   );
 }
+
+import { warmBackend } from "./lib/api";
+
+// At the top of App(), before the return:
+useEffect(() => { warmBackend(); }, []);

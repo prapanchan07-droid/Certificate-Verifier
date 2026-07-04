@@ -25,3 +25,8 @@ export async function downloadReport(results) {
   if (!response.ok) throw new Error("Report generation failed");
   return response.blob();
 }
+
+// Ping the backend on page load to wake it up
+export function warmBackend() {
+  fetch(`${API_BASE_URL}/`).catch(() => {});
+}
