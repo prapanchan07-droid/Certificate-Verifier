@@ -16,6 +16,10 @@ from app.core.report_generator import generate_pdf_report
 
 app = FastAPI(title="CertifyX — Certificate Verification API")
 
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "CertifyX"}
+
 ALLOWED_ORIGINS = os.environ.get(
     "ALLOWED_ORIGINS",
     "http://localhost:5173"
