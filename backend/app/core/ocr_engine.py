@@ -116,40 +116,64 @@ class OCREngine:
 
     def _extract_institution(self, lines: list) -> str | None:
         """
-        Extract the actual school/college name.
-        Strategy: find the line after 'NAME OF THE SCHOOL' label,
-        or find a line with school keywords that is NOT a board header.
+        Extract English school name only.
+        Looks for the line after 'NAME OF THE SCHOOL' anchor.
+        Falls back to finding a line with school keywords in ASCII only.
         """
-        # Strategy 1: look for 'NAME OF THE SCHOOL' anchor then grab next non-empty line
+        _BOARD_NOISE = [
+            "STATE BOARD OF SCHOOL EXAMINATIONS",
+            "DEPARTMENT OF GOVERNMENT EXAMINATIONS",
+            "SECONDARY SCHOOL LEAVING CERTIFICATE",
+            "HIGHER SECONDARY COURSE",
+            "ISSUED UNDER THE AUTHORITY",
+            "GOVERNMENT OF TAMILNADU",
+            "GOVERNMENT OF TAMIL NADU",
+            "PROVISIONAL CERTIFICATE",
+            "X STANDARD",
+        ]
+    
+        _SCHOOL_KEYWORDS = [
+            "GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
+            "MATRICULATION", "AIDED", "SCHOOL", "COLLEGE",
+            "GHSS", "GHNS", "MHSS",
+        ]
+    
+        def is_english(text):
+            """Return True if text is mostly ASCII (not Tamil script)."""
+            ascii_chars = sum(1 for c in text if ord(c) < 128)
+            return ascii_chars / max(len(text), 1) > 0.7
+    
+        # Strategy 1: anchor on "NAME OF THE SCHOOL" then grab next English line
         for i, line in enumerate(lines):
-            if "NAME OF THE SCHOOL" in line or "பள்ளியின் பெயர்" in line:
-                # The school name is usually on the next 1-2 lines
-                for j in range(i + 1, min(i + 4, len(lines))):
+            if "NAME OF THE SCHOOL" in line or "PALLI" in line.upper():
+                for j in range(i + 1, min(i + 5, len(lines))):
                     candidate = lines[j].strip()
                     candidate = re.sub(r"^\d+\s*", "", candidate)
                     candidate = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", candidate).strip()
-                    if len(candidate) > 5 and not any(
-                        noise in candidate for noise in _BOARD_NOISE
+                    if (
+                        len(candidate) > 5
+                        and is_english(candidate)
+                        and not any(noise in candidate for noise in _BOARD_NOISE)
+                        and any(kw in candidate for kw in _SCHOOL_KEYWORDS)
                     ):
                         return candidate
                 break
-
-        # Strategy 2: find a school/college line that isn't board header noise
-        school_keywords = ["GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
-                           "MATRICULATION", "CBSE", "AIDED", "SCHOOL", "COLLEGE"]
+    
+        # Strategy 2: scan all lines for English school name
         for line in lines:
             upper = line.strip().upper()
-            if not any(kw in upper for kw in school_keywords):
+            if not is_english(upper):
+                continue
+            if not any(kw in upper for kw in _SCHOOL_KEYWORDS):
                 continue
             if any(noise in upper for noise in _BOARD_NOISE):
                 continue
-            # Must be reasonably long and look like a school name
             cleaned = re.sub(r"^\d+\s*", "", upper).strip()
             if len(cleaned) > 8:
                 return cleaned
-
+    
         return None
-
+        
     def extract_details(self, img_bytes: bytes) -> dict:
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)
@@ -161,7 +185,7 @@ class OCREngine:
 
             # Single PSM 1 pass — auto page segmentation, best for certificates
             text_dump = pytesseract.image_to_string(
-                gray, lang="eng+tam", config="--psm 1"
+                gray, lang="eng+tam", config="--psm 6"
             )
             text_dump = self._normalize_tamil_digits(text_dump.upper())
             lines = [l for l in text_dump.split("\n") if l.strip()]
