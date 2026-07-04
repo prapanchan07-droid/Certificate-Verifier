@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import FileUploader from "./components/FileUploader";
 import VerificationMetrics from "./components/VerificationMetrics";
 import Dashboard from "./components/Dashboard";
@@ -30,7 +30,6 @@ export default function App() {
           <FileUploader setResults={setResults} setLoading={setLoading} />
           {results && results.final_decision !== "ERROR" && <VerificationMetrics results={results} />}
         </div>
-
         <div className="lg:col-span-2">
           <Dashboard results={results} loading={loading} />
         </div>
@@ -42,8 +41,3 @@ export default function App() {
     </div>
   );
 }
-
-import { warmBackend } from "./lib/api";
-
-// At the top of App(), before the return:
-useEffect(() => { warmBackend(); }, []);
