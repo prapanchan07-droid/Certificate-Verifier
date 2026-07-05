@@ -30,10 +30,36 @@ _SCHOOL_KEYWORDS = [
     "GHSS", "GHNS", "MHSS",
 ]
 
+_SENTENCE_WORDS = re.compile(
+    r'\b(THE|AND|OF|FOR|IN|TO|WITH|IS|ARE|WAS|OBTAINED|FOLLOWING'
+    r'|CERTIFIED|APPEARED|MARKS|SUBJECT|PRACTICAL|THEORY|PASS|FAIL'
+    r'|ABOVE|MENTIONED|CANDIDATE|APPEARED|SECONDARY|LEAVING'
+    r'|CERTIFICATE|PUBLIC|EXAMINATION)\b'
+)
+
 
 def _is_english(text: str) -> bool:
     ascii_chars = sum(1 for c in text if ord(c) < 128)
     return ascii_chars / max(len(text), 1) > 0.7
+
+
+def _looks_like_name(text: str) -> bool:
+    """Return True if text looks like a person's name."""
+    text = text.strip()
+    if len(text) < 3 or len(text) > 60:
+        return False
+    if not _is_english(text):
+        return False
+    if _SENTENCE_WORDS.search(text):
+        return False
+    # Must be mostly letters and spaces
+    if not re.match(r'^[A-Z][A-Z\s\.]+$', text):
+        return False
+    # Must have at least 2 words or one word ≥4 chars
+    words = text.split()
+    if len(words) < 2 and len(text) < 4:
+        return False
+    return True
 
 
 class OCREngine:
@@ -48,7 +74,6 @@ class OCREngine:
         )
 
     def _ocr(self, gray: np.ndarray, psm: int = 6) -> str:
-        """Run Tesseract and return normalized uppercase text."""
         raw = pytesseract.image_to_string(
             gray, lang="eng+tam", config=f"--psm {psm}"
         )
@@ -78,7 +103,6 @@ class OCREngine:
         dm = re.search(r"\b(\d{7})\b", norm)
         if dm:
             return dm.group(1)
-
         return None
 
     def _extract_total_marks(self, text_dump, lines):
@@ -114,44 +138,60 @@ class OCREngine:
             return "".join(digits[:4])
         return None
 
-    def _extract_candidate_name(self, text_dump: str) -> str | None:
-        """
-        Extract candidate name.
-        On TN certificates the name appears right after the
-        'NAME OF THE CANDIDATE' label and before the session month.
-        """
-        # Pattern 1: between label and session token
+    def _extract_candidate_name(self, text_dump: str, lines: list) -> str | None:
+        # Pattern 1: NAME OF THE CANDIDATE label → name → session month
         m = re.search(
-            r'NAME OF THE CANDIDATE\s*[:\-]?\s*'
-            r'([A-Z][A-Z\s\.]{2,50}?)'
-            r'\s+' + _SESSIONS + r'\s+\d{4}',
+            r'NAME OF THE CANDIDATE\s*[:\-]?\s*\n?\s*'
+            r'([A-Z][A-Z\s\.]{2,50}?)\s*\n',
             text_dump,
-            re.DOTALL,
         )
         if m:
             name = m.group(1).strip()
-            # Sanity: reject if it contains sentence-like words
-            if not re.search(r'\b(THE|AND|OF|FOR|IN|TO|WITH|IS|ARE|WAS)\b', name):
+            if _looks_like_name(name):
+                print(f"NAME P1: {name}")
                 return name
 
-        # Pattern 2: immediately after label on the same/next line
+        # Pattern 2: label and name on same line or next line, before session
         m = re.search(
-            r'NAME OF THE CANDIDATE\s*[:\-]?\s*\n*\s*'
-            r'([A-Z][A-Z\s\.]{4,40})',
-            text_dump,
+            r'NAME OF THE CANDIDATE\s*[:\-]?\s*'
+            r'([A-Z][A-Z\s\.]{2,50}?)'
+            r'\s+' + _SESSIONS,
+            text_dump, re.DOTALL,
         )
         if m:
-            name = m.group(1).strip().split('\n')[0].strip()
-            if not re.search(r'\b(THE|AND|OF|FOR|IN|TO|WITH|IS|ARE|WAS)\b', name):
+            name = m.group(1).strip()
+            if _looks_like_name(name):
+                print(f"NAME P2: {name}")
                 return name
 
-        # Pattern 3: Tamil label followed by name
-        m = re.search(
-            r'தேர்வரின்\s+பெயர்[^\n]*\n\s*([A-Z][A-Z\s\.]{4,40})',
-            text_dump,
-        )
-        if m:
-            return m.group(1).strip().split('\n')[0].strip()
+        # Pattern 3: look for lines immediately after the label
+        for i, line in enumerate(lines):
+            if "NAME OF THE CANDIDATE" in line or "தேர்வரின் பெயர்" in line:
+                # Check same line first (label and name together)
+                after = re.sub(r'NAME OF THE CANDIDATE\s*[:\-]?\s*', '', line).strip()
+                if _looks_like_name(after):
+                    print(f"NAME P3a: {after}")
+                    return after
+                # Then check next 3 lines
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    candidate = lines[j].strip()
+                    if _looks_like_name(candidate):
+                        print(f"NAME P3b: {candidate}")
+                        return candidate
+                break
+
+        # Pattern 4: find any all-caps name-like line before a session token
+        for i, line in enumerate(lines):
+            if re.search(_SESSIONS, line):
+                # Check the line itself and 3 lines before
+                for j in range(max(0, i - 3), i + 1):
+                    candidate = re.sub(r'\b' + _SESSIONS + r'\b.*', '',
+                                       lines[j]).strip()
+                    candidate = re.sub(r'\d{4}', '', candidate).strip()
+                    if _looks_like_name(candidate):
+                        print(f"NAME P4: {candidate}")
+                        return candidate
+                break
 
         return None
 
@@ -172,7 +212,7 @@ class OCREngine:
                         return candidate
                 break
 
-        # Strategy 2: scan all lines
+        # Strategy 2: scan all lines for English school name
         for line in lines:
             upper = line.strip().upper()
             if not _is_english(upper):
@@ -187,6 +227,8 @@ class OCREngine:
 
         return None
 
+    
+    
     def extract_details(self, img_bytes: bytes) -> dict:
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)
@@ -195,38 +237,37 @@ class OCREngine:
                 return self._empty(error="imdecode returned None")
 
             h, w = img.shape[:2]
+            print(f"OCR input: {w}x{h}")
 
             # -------------------------------------------------------
-            # Downscale for speed: cap longest side at 1800px
+            # Resize to max 1400px height for speed
+            # Tesseract is accurate at 150-200 DPI equivalent
             # -------------------------------------------------------
-            max_side = 1800
-            scale = min(max_side / max(h, w), 1.0)
-            if scale < 1.0:
-                img = cv2.resize(img, (int(w * scale), int(h * scale)),
+            max_h = 1400
+            if h > max_h:
+                scale = max_h / h
+                img = cv2.resize(img, (int(w * scale), max_h),
                                  interpolation=cv2.INTER_AREA)
                 h, w = img.shape[:2]
-                print(f"OCR: downscaled to {w}×{h}")
-
+                print(f"OCR: resized to {w}x{h}")
+    
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
             # -------------------------------------------------------
-            # Region-based OCR for speed + accuracy
-            # Top 45% of page → name, roll, reg (header zone)
-            # Bottom 60% of page → marks, school (data zone)
-            # Full page → fallback
+            # Full page OCR at native resolution (no downscale)
+            # PSM 6 = uniform block — fast and reliable
             # -------------------------------------------------------
-            top = gray[0:int(h * 0.45), :]
-            bottom = gray[int(h * 0.40):, :]
+            full_text = self._ocr(gray, psm=6)
+            full_text = full_text.strip()
+            lines_all = [l for l in full_text.split("\n") if l.strip()]
 
-            top_text = self._ocr(top, psm=6)
-            bottom_text = self._ocr(bottom, psm=6)
-            full_text = top_text + "\n" + bottom_text
+            print(f"OCR full: {len(full_text)} chars, {len(lines_all)} lines")
 
-            print(f"OCR top: {len(top_text)} chars | bottom: {len(bottom_text)} chars")
-
-            lines_top = [l for l in top_text.split("\n") if l.strip()]
-            lines_bottom = [l for l in bottom_text.split("\n") if l.strip()]
-            lines_all = lines_top + lines_bottom
+            # If OCR returned nothing, try PSM 3
+            if len(full_text) < 100:
+                print("OCR: retrying with PSM 3")
+                full_text = self._ocr(gray, psm=3)
+                lines_all = [l for l in full_text.split("\n") if l.strip()]
 
             extracted = {
                 "candidate_name": None,
@@ -237,51 +278,42 @@ class OCREngine:
                 "raw_text": full_text,
             }
 
-            # ---------- CANDIDATE NAME (top region) ----------
-            extracted["candidate_name"] = self._extract_candidate_name(top_text)
+            # ---------- CANDIDATE NAME ----------
+            extracted["candidate_name"] = self._extract_candidate_name(
+                full_text, lines_all
+            )
 
-            # ---------- ROLL NUMBER (top region) ----------
-            extracted["roll_no"] = self._extract_roll_no(top_text, lines_top)
-            if not extracted["roll_no"]:
-                m = re.search(r"\b\d{7}\b", top_text)
-                if m:
-                    extracted["roll_no"] = m.group(0)
-            # fallback: full page
-            if not extracted["roll_no"]:
-                extracted["roll_no"] = self._extract_roll_no(full_text, lines_all)
+            # ---------- ROLL NUMBER ----------
+            extracted["roll_no"] = self._extract_roll_no(full_text, lines_all)
             if not extracted["roll_no"]:
                 m = re.search(r"\b\d{7}\b", full_text)
                 if m:
                     extracted["roll_no"] = m.group(0)
 
-            # ---------- REGISTER NUMBER (bottom region) ----------
-            for text in (bottom_text, full_text):
-                m = re.search(r"\bJ\d{7}\b", text)
+            # ---------- REGISTER NUMBER ----------
+            m = re.search(r"\bJ\d{7}\b", full_text)
+            if m:
+                extracted["reg_no"] = m.group(0)
+            if not extracted["reg_no"]:
+                m = re.search(r"\b\d{10}\b", full_text)
                 if m:
                     extracted["reg_no"] = m.group(0)
-                    break
-            if not extracted["reg_no"]:
-                for text in (bottom_text, full_text):
-                    m = re.search(r"\b\d{10}\b", text)
-                    if m:
-                        extracted["reg_no"] = m.group(0)
-                        break
             if not extracted["reg_no"]:
                 m = re.search(r"\b[A-Z]{1,3}\d{5,}\b", full_text)
                 if m:
                     extracted["reg_no"] = m.group(0)
 
-            # ---------- TOTAL MARKS (bottom region) ----------
+            # ---------- TOTAL MARKS ----------
             extracted["total_marks"] = self._extract_total_marks(
-                bottom_text, lines_bottom
+                full_text, lines_all
             )
-            if not extracted["total_marks"]:
-                extracted["total_marks"] = self._extract_total_marks(
-                    full_text, lines_all
-                )
 
-            # ---------- INSTITUTION (bottom region) ----------
-            extracted["institution"] = self._extract_institution(lines_bottom)
+            # ---------- INSTITUTION ----------
+            # Search bottom 50% of lines where school name appears
+            mid = len(lines_all) // 2
+            extracted["institution"] = self._extract_institution(
+                lines_all[mid:]
+            )
             if not extracted["institution"]:
                 extracted["institution"] = self._extract_institution(lines_all)
 
