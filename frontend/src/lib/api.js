@@ -1,4 +1,5 @@
-const API_BASE_URL = "https://certificate-verifier-dayu.onrender.com";
+const API_BASE_URL = "http://3.91.58.234:8000";
+// const API_BASE_URL = "https://certificate-verifier-dayu.onrender.com";
 
 export async function verifyCertificate(file) {
   const formData = new FormData();
