@@ -12,7 +12,6 @@ elif os.name == "nt":
 
 _SESSIONS = r"(APR|MAR|OCT|NOV|DEC|JAN|FEB)"
 
-# These are header lines that appear on every certificate — not the school name
 _BOARD_NOISE = [
     "STATE BOARD OF SCHOOL EXAMINATIONS",
     "DEPARTMENT OF GOVERNMENT EXAMINATIONS",
@@ -25,6 +24,17 @@ _BOARD_NOISE = [
     "X STANDARD",
 ]
 
+_SCHOOL_KEYWORDS = [
+    "GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
+    "MATRICULATION", "AIDED", "SCHOOL", "COLLEGE",
+    "GHSS", "GHNS", "MHSS",
+]
+
+
+def _is_english(text: str) -> bool:
+    ascii_chars = sum(1 for c in text if ord(c) < 128)
+    return ascii_chars / max(len(text), 1) > 0.7
+
 
 class OCREngine:
 
@@ -36,6 +46,13 @@ class OCREngine:
             .replace("௬", "6").replace("௭", "7").replace("௮", "8")
             .replace("௯", "9")
         )
+
+    def _ocr(self, gray: np.ndarray, psm: int = 6) -> str:
+        """Run Tesseract and return normalized uppercase text."""
+        raw = pytesseract.image_to_string(
+            gray, lang="eng+tam", config=f"--psm {psm}"
+        )
+        return self._normalize_tamil_digits(raw.upper())
 
     def _extract_roll_no(self, text_dump, lines):
         m = re.search(r"ROLL\s*NO\.?\s*[:\-]?\s*(\d{7})", text_dump)
@@ -97,72 +114,68 @@ class OCREngine:
             return "".join(digits[:4])
         return None
 
-    def _extract_candidate_name(self, text_dump):
+    def _extract_candidate_name(self, text_dump: str) -> str | None:
+        """
+        Extract candidate name.
+        On TN certificates the name appears right after the
+        'NAME OF THE CANDIDATE' label and before the session month.
+        """
+        # Pattern 1: between label and session token
         m = re.search(
-            r'NAME OF THE CANDIDATE\s+([A-Z][A-Z\s]{2,40}?)\s+' + _SESSIONS + r'\s+\d{4}',
+            r'NAME OF THE CANDIDATE\s*[:\-]?\s*'
+            r'([A-Z][A-Z\s\.]{2,50}?)'
+            r'\s+' + _SESSIONS + r'\s+\d{4}',
             text_dump,
             re.DOTALL,
         )
         if m:
-            return m.group(1).strip()
+            name = m.group(1).strip()
+            # Sanity: reject if it contains sentence-like words
+            if not re.search(r'\b(THE|AND|OF|FOR|IN|TO|WITH|IS|ARE|WAS)\b', name):
+                return name
 
+        # Pattern 2: immediately after label on the same/next line
         m = re.search(
-            r'([A-Z]{2,}(?:\s+[A-Z]{1,}){1,3})\s+' + _SESSIONS,
-            text_dump
+            r'NAME OF THE CANDIDATE\s*[:\-]?\s*\n*\s*'
+            r'([A-Z][A-Z\s\.]{4,40})',
+            text_dump,
         )
         if m:
-            return m.group(1).strip()
+            name = m.group(1).strip().split('\n')[0].strip()
+            if not re.search(r'\b(THE|AND|OF|FOR|IN|TO|WITH|IS|ARE|WAS)\b', name):
+                return name
+
+        # Pattern 3: Tamil label followed by name
+        m = re.search(
+            r'தேர்வரின்\s+பெயர்[^\n]*\n\s*([A-Z][A-Z\s\.]{4,40})',
+            text_dump,
+        )
+        if m:
+            return m.group(1).strip().split('\n')[0].strip()
+
         return None
 
     def _extract_institution(self, lines: list) -> str | None:
-        """
-        Extract English school name only.
-        Looks for the line after 'NAME OF THE SCHOOL' anchor.
-        Falls back to finding a line with school keywords in ASCII only.
-        """
-        _BOARD_NOISE = [
-            "STATE BOARD OF SCHOOL EXAMINATIONS",
-            "DEPARTMENT OF GOVERNMENT EXAMINATIONS",
-            "SECONDARY SCHOOL LEAVING CERTIFICATE",
-            "HIGHER SECONDARY COURSE",
-            "ISSUED UNDER THE AUTHORITY",
-            "GOVERNMENT OF TAMILNADU",
-            "GOVERNMENT OF TAMIL NADU",
-            "PROVISIONAL CERTIFICATE",
-            "X STANDARD",
-        ]
-    
-        _SCHOOL_KEYWORDS = [
-            "GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
-            "MATRICULATION", "AIDED", "SCHOOL", "COLLEGE",
-            "GHSS", "GHNS", "MHSS",
-        ]
-    
-        def is_english(text):
-            """Return True if text is mostly ASCII (not Tamil script)."""
-            ascii_chars = sum(1 for c in text if ord(c) < 128)
-            return ascii_chars / max(len(text), 1) > 0.7
-    
-        # Strategy 1: anchor on "NAME OF THE SCHOOL" then grab next English line
+        # Strategy 1: anchor on NAME OF THE SCHOOL
         for i, line in enumerate(lines):
-            if "NAME OF THE SCHOOL" in line or "PALLI" in line.upper():
+            if "NAME OF THE SCHOOL" in line or "பள்ளியின் பெயர்" in line:
                 for j in range(i + 1, min(i + 5, len(lines))):
                     candidate = lines[j].strip()
                     candidate = re.sub(r"^\d+\s*", "", candidate)
                     candidate = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", candidate).strip()
                     if (
                         len(candidate) > 5
-                        and is_english(candidate)
+                        and _is_english(candidate)
                         and not any(noise in candidate for noise in _BOARD_NOISE)
                         and any(kw in candidate for kw in _SCHOOL_KEYWORDS)
                     ):
                         return candidate
                 break
-    
-        # Strategy 2: scan all lines for English school name
+
+        # Strategy 2: scan all lines
         for line in lines:
             upper = line.strip().upper()
-            if not is_english(upper):
+            if not _is_english(upper):
                 continue
             if not any(kw in upper for kw in _SCHOOL_KEYWORDS):
                 continue
@@ -171,9 +184,9 @@ class OCREngine:
             cleaned = re.sub(r"^\d+\s*", "", upper).strip()
             if len(cleaned) > 8:
                 return cleaned
-    
+
         return None
-        
+
     def extract_details(self, img_bytes: bytes) -> dict:
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)
@@ -181,16 +194,39 @@ class OCREngine:
             if img is None:
                 return self._empty(error="imdecode returned None")
 
+            h, w = img.shape[:2]
+
+            # -------------------------------------------------------
+            # Downscale for speed: cap longest side at 1800px
+            # -------------------------------------------------------
+            max_side = 1800
+            scale = min(max_side / max(h, w), 1.0)
+            if scale < 1.0:
+                img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                                 interpolation=cv2.INTER_AREA)
+                h, w = img.shape[:2]
+                print(f"OCR: downscaled to {w}×{h}")
+
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            # Single PSM 1 pass — auto page segmentation, best for certificates
-            text_dump = pytesseract.image_to_string(
-                gray, lang="eng+tam", config="--psm 6"
-            )
-            text_dump = self._normalize_tamil_digits(text_dump.upper())
-            lines = [l for l in text_dump.split("\n") if l.strip()]
+            # -------------------------------------------------------
+            # Region-based OCR for speed + accuracy
+            # Top 45% of page → name, roll, reg (header zone)
+            # Bottom 60% of page → marks, school (data zone)
+            # Full page → fallback
+            # -------------------------------------------------------
+            top = gray[0:int(h * 0.45), :]
+            bottom = gray[int(h * 0.40):, :]
 
-            print(f"OCR raw length: {len(text_dump)} chars, lines: {len(lines)}")
+            top_text = self._ocr(top, psm=6)
+            bottom_text = self._ocr(bottom, psm=6)
+            full_text = top_text + "\n" + bottom_text
+
+            print(f"OCR top: {len(top_text)} chars | bottom: {len(bottom_text)} chars")
+
+            lines_top = [l for l in top_text.split("\n") if l.strip()]
+            lines_bottom = [l for l in bottom_text.split("\n") if l.strip()]
+            lines_all = lines_top + lines_bottom
 
             extracted = {
                 "candidate_name": None,
@@ -198,44 +234,63 @@ class OCREngine:
                 "reg_no": None,
                 "total_marks": None,
                 "institution": None,
-                "raw_text": text_dump,
+                "raw_text": full_text,
             }
 
-            # ---------- ROLL NUMBER ----------
-            extracted["roll_no"] = self._extract_roll_no(text_dump, lines)
+            # ---------- CANDIDATE NAME (top region) ----------
+            extracted["candidate_name"] = self._extract_candidate_name(top_text)
+
+            # ---------- ROLL NUMBER (top region) ----------
+            extracted["roll_no"] = self._extract_roll_no(top_text, lines_top)
             if not extracted["roll_no"]:
-                m = re.search(r"\b\d{7}\b", text_dump)
+                m = re.search(r"\b\d{7}\b", top_text)
+                if m:
+                    extracted["roll_no"] = m.group(0)
+            # fallback: full page
+            if not extracted["roll_no"]:
+                extracted["roll_no"] = self._extract_roll_no(full_text, lines_all)
+            if not extracted["roll_no"]:
+                m = re.search(r"\b\d{7}\b", full_text)
                 if m:
                     extracted["roll_no"] = m.group(0)
 
-            # ---------- REGISTER NUMBER ----------
-            m = re.search(r"\bJ\d{7}\b", text_dump)
-            if m:
-                extracted["reg_no"] = m.group(0)
-
+            # ---------- REGISTER NUMBER (bottom region) ----------
+            for text in (bottom_text, full_text):
+                m = re.search(r"\bJ\d{7}\b", text)
+                if m:
+                    extracted["reg_no"] = m.group(0)
+                    break
             if not extracted["reg_no"]:
-                m = re.search(r"\b\d{10}\b", text_dump)
+                for text in (bottom_text, full_text):
+                    m = re.search(r"\b\d{10}\b", text)
+                    if m:
+                        extracted["reg_no"] = m.group(0)
+                        break
+            if not extracted["reg_no"]:
+                m = re.search(r"\b[A-Z]{1,3}\d{5,}\b", full_text)
                 if m:
                     extracted["reg_no"] = m.group(0)
 
-            if not extracted["reg_no"]:
-                m = re.search(r"\b[A-Z]{1,3}\d{5,}\b", text_dump)
-                if m:
-                    extracted["reg_no"] = m.group(0)
+            # ---------- TOTAL MARKS (bottom region) ----------
+            extracted["total_marks"] = self._extract_total_marks(
+                bottom_text, lines_bottom
+            )
+            if not extracted["total_marks"]:
+                extracted["total_marks"] = self._extract_total_marks(
+                    full_text, lines_all
+                )
 
-            # ---------- TOTAL MARKS ----------
-            extracted["total_marks"] = self._extract_total_marks(text_dump, lines)
-
-            # ---------- CANDIDATE NAME ----------
-            extracted["candidate_name"] = self._extract_candidate_name(text_dump)
-
-            # ---------- INSTITUTION ----------
-            extracted["institution"] = self._extract_institution(lines)
+            # ---------- INSTITUTION (bottom region) ----------
+            extracted["institution"] = self._extract_institution(lines_bottom)
+            if not extracted["institution"]:
+                extracted["institution"] = self._extract_institution(lines_all)
 
             print("OCR FINAL:", extracted)
             return extracted
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return self._empty(error=str(e))
 
     @staticmethod
