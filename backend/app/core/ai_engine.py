@@ -9,10 +9,6 @@ class AIVerificationEngine:
         self.template_path = template_path
         self.orb = cv2.ORB_create(nfeatures=2000)
 
-    # ------------------------------------------------------------------
-    # 1. DESKEW — images only, not PDFs
-    # ------------------------------------------------------------------
-
     def deskew(self, img: np.ndarray) -> np.ndarray:
         try:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -59,10 +55,6 @@ class AIVerificationEngine:
             print("DESKEW ERROR:", e)
             return img
 
-    # ------------------------------------------------------------------
-    # 2. ENHANCE — skip upscale for PDFs (already large enough)
-    # ------------------------------------------------------------------
-
     def enhance(self, img: np.ndarray, is_pdf: bool = False) -> np.ndarray:
         try:
             if not is_pdf:
@@ -72,7 +64,6 @@ class AIVerificationEngine:
                     (int(w * 1.5), int(h * 1.5)),
                     interpolation=cv2.INTER_CUBIC,
                 )
-
             blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=2)
             sharpened = cv2.addWeighted(img, 1.5, blurred, -0.5, 0)
             print("ENHANCE: done")
@@ -80,10 +71,6 @@ class AIVerificationEngine:
         except Exception as e:
             print("ENHANCE ERROR:", e)
             return img
-
-    # ------------------------------------------------------------------
-    # 3. ALIGN — ORB + homography
-    # ------------------------------------------------------------------
 
     def align_to_template(self, input_img: np.ndarray, template_img: np.ndarray):
         gray_input = cv2.cvtColor(input_img, cv2.COLOR_BGR2GRAY)
@@ -113,10 +100,6 @@ class AIVerificationEngine:
 
         h, w = gray_template.shape
         return cv2.warpPerspective(input_img, M, (w, h))
-
-    # ------------------------------------------------------------------
-    # 4. TAMPER SCORE — SSIM + ELA + Laplacian
-    # ------------------------------------------------------------------
 
     def calculate_tamper_score(self, input_img: np.ndarray, template_img: np.ndarray):
         aligned = self.align_to_template(input_img, template_img)
