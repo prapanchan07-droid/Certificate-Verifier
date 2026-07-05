@@ -44,7 +44,6 @@ def _is_english(text: str) -> bool:
 
 
 def _looks_like_name(text: str) -> bool:
-    """Return True if text looks like a person's name."""
     text = text.strip()
     if len(text) < 3 or len(text) > 60:
         return False
@@ -52,10 +51,8 @@ def _looks_like_name(text: str) -> bool:
         return False
     if _SENTENCE_WORDS.search(text):
         return False
-    # Must be mostly letters and spaces
     if not re.match(r'^[A-Z][A-Z\s\.]+$', text):
         return False
-    # Must have at least 2 words or one word ≥4 chars
     words = text.split()
     if len(words) < 2 and len(text) < 4:
         return False
@@ -139,7 +136,8 @@ class OCREngine:
         return None
 
     def _extract_candidate_name(self, text_dump: str, lines: list) -> str | None:
-        # Pattern 1: NAME OF THE CANDIDATE label → name → session month
+
+        # Pattern 1: label → name on next line → session month
         m = re.search(
             r'NAME OF THE CANDIDATE\s*[:\-]?\s*\n?\s*'
             r'([A-Z][A-Z\s\.]{2,50}?)\s*\n',
@@ -151,7 +149,7 @@ class OCREngine:
                 print(f"NAME P1: {name}")
                 return name
 
-        # Pattern 2: label and name on same line or next line, before session
+        # Pattern 2: label and name before session token
         m = re.search(
             r'NAME OF THE CANDIDATE\s*[:\-]?\s*'
             r'([A-Z][A-Z\s\.]{2,50}?)'
@@ -164,15 +162,15 @@ class OCREngine:
                 print(f"NAME P2: {name}")
                 return name
 
-        # Pattern 3: look for lines immediately after the label
+        # Pattern 3: lines after label
         for i, line in enumerate(lines):
             if "NAME OF THE CANDIDATE" in line or "தேர்வரின் பெயர்" in line:
-                # Check same line first (label and name together)
-                after = re.sub(r'NAME OF THE CANDIDATE\s*[:\-]?\s*', '', line).strip()
+                after = re.sub(
+                    r'NAME OF THE CANDIDATE\s*[:\-]?\s*', '', line
+                ).strip()
                 if _looks_like_name(after):
                     print(f"NAME P3a: {after}")
                     return after
-                # Then check next 3 lines
                 for j in range(i + 1, min(i + 4, len(lines))):
                     candidate = lines[j].strip()
                     if _looks_like_name(candidate):
@@ -180,13 +178,13 @@ class OCREngine:
                         return candidate
                 break
 
-        # Pattern 4: find any all-caps name-like line before a session token
+        # Pattern 4: name-like line before session token
         for i, line in enumerate(lines):
             if re.search(_SESSIONS, line):
-                # Check the line itself and 3 lines before
                 for j in range(max(0, i - 3), i + 1):
-                    candidate = re.sub(r'\b' + _SESSIONS + r'\b.*', '',
-                                       lines[j]).strip()
+                    candidate = re.sub(
+                        r'\b' + _SESSIONS + r'\b.*', '', lines[j]
+                    ).strip()
                     candidate = re.sub(r'\d{4}', '', candidate).strip()
                     if _looks_like_name(candidate):
                         print(f"NAME P4: {candidate}")
@@ -196,13 +194,16 @@ class OCREngine:
         return None
 
     def _extract_institution(self, lines: list) -> str | None:
+
         # Strategy 1: anchor on NAME OF THE SCHOOL
         for i, line in enumerate(lines):
             if "NAME OF THE SCHOOL" in line or "பள்ளியின் பெயர்" in line:
                 for j in range(i + 1, min(i + 5, len(lines))):
                     candidate = lines[j].strip()
                     candidate = re.sub(r"^\d+\s*", "", candidate)
-                    candidate = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", candidate).strip()
+                    candidate = re.sub(
+                        r"[^A-Z0-9.,&()\-\s]+$", "", candidate
+                    ).strip()
                     if (
                         len(candidate) > 5
                         and _is_english(candidate)
@@ -212,7 +213,7 @@ class OCREngine:
                         return candidate
                 break
 
-        # Strategy 2: scan all lines for English school name
+        # Strategy 2: scan lines for English school name
         for line in lines:
             upper = line.strip().upper()
             if not _is_english(upper):
@@ -227,8 +228,6 @@ class OCREngine:
 
         return None
 
-    
-    
     def extract_details(self, img_bytes: bytes) -> dict:
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)
@@ -241,21 +240,23 @@ class OCREngine:
 
             # -------------------------------------------------------
             # Resize to max 1400px height for speed
-            # Tesseract is accurate at 150-200 DPI equivalent
+            # Tesseract works well at 150-200 DPI equivalent
             # -------------------------------------------------------
             max_h = 1400
             if h > max_h:
                 scale = max_h / h
-                img = cv2.resize(img, (int(w * scale), max_h),
-                                 interpolation=cv2.INTER_AREA)
+                img = cv2.resize(
+                    img,
+                    (int(w * scale), max_h),
+                    interpolation=cv2.INTER_AREA,
+                )
                 h, w = img.shape[:2]
                 print(f"OCR: resized to {w}x{h}")
-    
+
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
             # -------------------------------------------------------
-            # Full page OCR at native resolution (no downscale)
-            # PSM 6 = uniform block — fast and reliable
+            # Single PSM 6 pass on full page
             # -------------------------------------------------------
             full_text = self._ocr(gray, psm=6)
             full_text = full_text.strip()
@@ -263,7 +264,7 @@ class OCREngine:
 
             print(f"OCR full: {len(full_text)} chars, {len(lines_all)} lines")
 
-            # If OCR returned nothing, try PSM 3
+            # Retry with PSM 3 if output is too short
             if len(full_text) < 100:
                 print("OCR: retrying with PSM 3")
                 full_text = self._ocr(gray, psm=3)
@@ -309,7 +310,7 @@ class OCREngine:
             )
 
             # ---------- INSTITUTION ----------
-            # Search bottom 50% of lines where school name appears
+            # Search bottom half first — school name is near the bottom
             mid = len(lines_all) // 2
             extracted["institution"] = self._extract_institution(
                 lines_all[mid:]
