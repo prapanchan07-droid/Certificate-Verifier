@@ -16,10 +16,7 @@ from app.core.report_generator import generate_pdf_report
 
 app = FastAPI(title="CertifyX — Certificate Verification API")
 
-ALLOWED_ORIGINS = os.environ.get(
-    "ALLOWED_ORIGINS",
-    "http://localhost:5173"
-).split(",")
+ALLOWED_ORIGINS = ["*"]
 
 app.add_middleware(
     CORSMiddleware,

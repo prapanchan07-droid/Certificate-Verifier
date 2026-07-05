@@ -33,8 +33,8 @@ _SCHOOL_KEYWORDS = [
 _SENTENCE_WORDS = re.compile(
     r'\b(THE|AND|OF|FOR|IN|TO|WITH|IS|ARE|WAS|OBTAINED|FOLLOWING'
     r'|CERTIFIED|APPEARED|MARKS|SUBJECT|PRACTICAL|THEORY|PASS|FAIL'
-    r'|ABOVE|MENTIONED|CANDIDATE|APPEARED|SECONDARY|LEAVING'
-    r'|CERTIFICATE|PUBLIC|EXAMINATION)\b'
+    r'|ABOVE|MENTIONED|SECONDARY|LEAVING|CERTIFICATE|PUBLIC|EXAMINATION'
+    r'|ISSUED|UNDER|AUTHORITY|DEPARTMENT|GOVERNMENT|TAMILNADU)\b'
 )
 
 
@@ -53,8 +53,10 @@ def _looks_like_name(text: str) -> bool:
         return False
     if not re.match(r'^[A-Z][A-Z\s\.]+$', text):
         return False
-    words = text.split()
-    if len(words) < 2 and len(text) < 4:
+    words = [w for w in text.split() if w]
+    if len(words) < 2:
+        return False
+    if any(len(w) > 20 for w in words):
         return False
     return True
 
@@ -76,7 +78,7 @@ class OCREngine:
         )
         return self._normalize_tamil_digits(raw.upper())
 
-    def _extract_roll_no(self, text_dump, lines):
+    def _extract_roll_no(self, text_dump: str, lines: list) -> str | None:
         m = re.search(r"ROLL\s*NO\.?\s*[:\-]?\s*(\d{7})", text_dump)
         if m:
             return m.group(1)
@@ -89,7 +91,7 @@ class OCREngine:
         if anchor is None:
             return None
 
-        window = " ".join(lines[anchor:anchor + 2])
+        window = " ".join(lines[anchor:anchor + 3])
         dm = re.search(r"\b(\d{7})\b", window)
         if dm:
             return dm.group(1)
@@ -102,7 +104,31 @@ class OCREngine:
             return dm.group(1)
         return None
 
-    def _extract_total_marks(self, text_dump, lines):
+    def _extract_reg_no(self, text_dump: str) -> str | None:
+        # Priority 1: J-prefix SSLC e.g. J3040362
+        m = re.search(r"\bJ\d{7}\b", text_dump)
+        if m:
+            return m.group(0)
+
+        # Priority 2: XM23R... style permanent reg
+        m = re.search(r"\b[A-Z]{2,4}\d{2}[A-Z]\d{7,}\b", text_dump)
+        if m:
+            return m.group(0)
+
+        # Priority 3: 10-digit permanent reg — skip EMIS IDs (start with 1012)
+        for match in re.finditer(r"\b(\d{10})\b", text_dump):
+            val = match.group(1)
+            if not val.startswith("1012"):
+                return val
+
+        # Priority 4: alpha+digit e.g. A2253054
+        m = re.search(r"\b[A-Z]{1,3}\d{5,9}\b", text_dump)
+        if m:
+            return m.group(0)
+
+        return None
+
+    def _extract_total_marks(self, text_dump: str, lines: list) -> str | None:
         m = re.search(r"TOTAL\s*MARKS\s*[:\-]?\s*(\d{3,4})", text_dump)
         if m:
             return m.group(1)
@@ -115,7 +141,7 @@ class OCREngine:
         if anchor is None:
             return None
 
-        window = " ".join(lines[anchor:anchor + 2])
+        window = " ".join(lines[anchor:anchor + 3])
         sp = window.upper().find("MARKS")
         segment = window[sp + 5:] if sp != -1 else window
         if ":" in segment:
@@ -136,74 +162,80 @@ class OCREngine:
         return None
 
     def _extract_candidate_name(self, text_dump: str, lines: list) -> str | None:
+        """
+        From the logs, the OCR produces this exact line:
+            'ல MUTHU KRISHNAN N APR 2023'
+        So the name and session are on the SAME line with garbage prefix.
+        Pattern: strip garbage → extract name before session token.
+        """
 
-        # Pattern 1: label → name on next line → session month
-        m = re.search(
-            r'NAME OF THE CANDIDATE\s*[:\-]?\s*\n?\s*'
-            r'([A-Z][A-Z\s\.]{2,50}?)\s*\n',
-            text_dump,
-        )
-        if m:
-            name = m.group(1).strip()
-            if _looks_like_name(name):
-                print(f"NAME P1: {name}")
-                return name
+        # Pattern 1: name + session on same line (most common in this cert)
+        # e.g. "ல MUTHU KRISHNAN N APR 2023" or "MUTHU KRISHNAN N APR 2023"
+        session_re = re.compile(_SESSIONS + r'\s+\d{4}')
+        for line in lines:
+            if session_re.search(line):
+                # Strip everything before the first capital English letter
+                cleaned = re.sub(r'^[^A-Z]+', '', line.strip())
+                # Remove the session+year suffix
+                name_part = session_re.sub('', cleaned).strip()
+                # Remove trailing garbage
+                name_part = re.sub(r'[^A-Z\s\.]', '', name_part).strip()
+                if _looks_like_name(name_part):
+                    print(f"NAME P1 (same line): {name_part}")
+                    return name_part
 
-        # Pattern 2: label and name before session token
-        m = re.search(
-            r'NAME OF THE CANDIDATE\s*[:\-]?\s*'
-            r'([A-Z][A-Z\s\.]{2,50}?)'
-            r'\s+' + _SESSIONS,
-            text_dump, re.DOTALL,
-        )
-        if m:
-            name = m.group(1).strip()
-            if _looks_like_name(name):
-                print(f"NAME P2: {name}")
-                return name
-
-        # Pattern 3: lines after label
+        # Pattern 2: directly after NAME OF THE CANDIDATE label
         for i, line in enumerate(lines):
-            if "NAME OF THE CANDIDATE" in line or "தேர்வரின் பெயர்" in line:
-                after = re.sub(
-                    r'NAME OF THE CANDIDATE\s*[:\-]?\s*', '', line
-                ).strip()
+            if "NAME OF THE CANDIDATE" in line:
+                after = re.sub(r'.*NAME OF THE CANDIDATE\s*[:\-/|]?\s*', '',
+                               line).strip()
+                after = re.sub(r'^[^A-Z]+', '', after).strip()
+                after = session_re.sub('', after).strip()
+                after = re.sub(r'[^A-Z\s\.]', '', after).strip()
                 if _looks_like_name(after):
-                    print(f"NAME P3a: {after}")
+                    print(f"NAME P2a: {after}")
                     return after
-                for j in range(i + 1, min(i + 4, len(lines))):
-                    candidate = lines[j].strip()
+                # Check next lines
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    candidate = re.sub(r'^[^A-Z]+', '', lines[j].strip())
+                    candidate = session_re.sub('', candidate).strip()
+                    candidate = re.sub(r'[^A-Z\s\.]', '', candidate).strip()
                     if _looks_like_name(candidate):
-                        print(f"NAME P3b: {candidate}")
+                        print(f"NAME P2b: {candidate}")
                         return candidate
                 break
 
-        # Pattern 4: name-like line before session token
+        # Pattern 3: scan all lines for name near session context
         for i, line in enumerate(lines):
-            if re.search(_SESSIONS, line):
-                for j in range(max(0, i - 3), i + 1):
-                    candidate = re.sub(
-                        r'\b' + _SESSIONS + r'\b.*', '', lines[j]
-                    ).strip()
-                    candidate = re.sub(r'\d{4}', '', candidate).strip()
-                    if _looks_like_name(candidate):
-                        print(f"NAME P4: {candidate}")
-                        return candidate
-                break
+            stripped = re.sub(r'^[^A-Z]+', '', line.strip())
+            if not stripped:
+                continue
+            # Skip lines with digits
+            if re.search(r'\d', stripped):
+                continue
+            if _looks_like_name(stripped):
+                prev = lines[i - 1].strip() if i > 0 else ""
+                nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                context = prev + " " + nxt
+                if re.search(_SESSIONS, context) or "CANDIDATE" in context \
+                        or "பெயர்" in context or "பருவம்" in context:
+                    print(f"NAME P3: {stripped}")
+                    return stripped
 
         return None
 
     def _extract_institution(self, lines: list) -> str | None:
 
+        def _clean(s):
+            s = re.sub(r"^[^A-Z0-9]+", "", s.strip())
+            s = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", s).strip()
+            return s
+
         # Strategy 1: anchor on NAME OF THE SCHOOL
         for i, line in enumerate(lines):
             if "NAME OF THE SCHOOL" in line or "பள்ளியின் பெயர்" in line:
                 for j in range(i + 1, min(i + 5, len(lines))):
-                    candidate = lines[j].strip()
-                    candidate = re.sub(r"^\d+\s*", "", candidate)
-                    candidate = re.sub(
-                        r"[^A-Z0-9.,&()\-\s]+$", "", candidate
-                    ).strip()
+                    candidate = _clean(lines[j])
                     if (
                         len(candidate) > 5
                         and _is_english(candidate)
@@ -213,18 +245,17 @@ class OCREngine:
                         return candidate
                 break
 
-        # Strategy 2: scan lines for English school name
+        # Strategy 2: scan lines
         for line in lines:
-            upper = line.strip().upper()
+            upper = _clean(line.upper())
             if not _is_english(upper):
                 continue
             if not any(kw in upper for kw in _SCHOOL_KEYWORDS):
                 continue
             if any(noise in upper for noise in _BOARD_NOISE):
                 continue
-            cleaned = re.sub(r"^\d+\s*", "", upper).strip()
-            if len(cleaned) > 8:
-                return cleaned
+            if len(upper) > 8:
+                return upper
 
         return None
 
@@ -238,33 +269,22 @@ class OCREngine:
             h, w = img.shape[:2]
             print(f"OCR input: {w}x{h}")
 
-            # -------------------------------------------------------
-            # Resize to max 1400px height for speed
-            # Tesseract works well at 150-200 DPI equivalent
-            # -------------------------------------------------------
             max_h = 1400
             if h > max_h:
                 scale = max_h / h
-                img = cv2.resize(
-                    img,
-                    (int(w * scale), max_h),
-                    interpolation=cv2.INTER_AREA,
-                )
+                img = cv2.resize(img, (int(w * scale), max_h),
+                                 interpolation=cv2.INTER_AREA)
                 h, w = img.shape[:2]
                 print(f"OCR: resized to {w}x{h}")
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            # -------------------------------------------------------
-            # Single PSM 6 pass on full page
-            # -------------------------------------------------------
             full_text = self._ocr(gray, psm=6)
             full_text = full_text.strip()
             lines_all = [l for l in full_text.split("\n") if l.strip()]
 
             print(f"OCR full: {len(full_text)} chars, {len(lines_all)} lines")
 
-            # Retry with PSM 3 if output is too short
             if len(full_text) < 100:
                 print("OCR: retrying with PSM 3")
                 full_text = self._ocr(gray, psm=3)
@@ -279,38 +299,23 @@ class OCREngine:
                 "raw_text": full_text,
             }
 
-            # ---------- CANDIDATE NAME ----------
             extracted["candidate_name"] = self._extract_candidate_name(
                 full_text, lines_all
             )
 
-            # ---------- ROLL NUMBER ----------
             extracted["roll_no"] = self._extract_roll_no(full_text, lines_all)
             if not extracted["roll_no"]:
                 m = re.search(r"\b\d{7}\b", full_text)
                 if m:
                     extracted["roll_no"] = m.group(0)
 
-            # ---------- REGISTER NUMBER ----------
-            m = re.search(r"\bJ\d{7}\b", full_text)
-            if m:
-                extracted["reg_no"] = m.group(0)
-            if not extracted["reg_no"]:
-                m = re.search(r"\b\d{10}\b", full_text)
-                if m:
-                    extracted["reg_no"] = m.group(0)
-            if not extracted["reg_no"]:
-                m = re.search(r"\b[A-Z]{1,3}\d{5,}\b", full_text)
-                if m:
-                    extracted["reg_no"] = m.group(0)
+            # Use dedicated method — correctly skips EMIS IDs
+            extracted["reg_no"] = self._extract_reg_no(full_text)
 
-            # ---------- TOTAL MARKS ----------
             extracted["total_marks"] = self._extract_total_marks(
                 full_text, lines_all
             )
 
-            # ---------- INSTITUTION ----------
-            # Search bottom half first — school name is near the bottom
             mid = len(lines_all) // 2
             extracted["institution"] = self._extract_institution(
                 lines_all[mid:]

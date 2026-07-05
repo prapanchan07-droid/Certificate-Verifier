@@ -14,8 +14,11 @@ _BOARD_NOISE = [
     "X STANDARD",
 ]
 
-_SCHOOL_KEYWORDS = ["GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
-                    "MATRICULATION", "AIDED", "SCHOOL", "COLLEGE"]
+_SCHOOL_KEYWORDS = [
+    "GOVT", "GOVERNMENT", "HR SEC", "HIGH SCHOOL",
+    "MATRICULATION", "AIDED", "SCHOOL", "COLLEGE",
+    "GHSS", "GHNS", "MHSS",
+]
 
 
 class OfficialVerifier:
@@ -44,16 +47,22 @@ class OfficialVerifier:
             if m:
                 result["roll_no"] = m.group()
 
-            # Register number
+            # Register number — J-prefix first
             m = re.search(r"\bJ\d{7}\b", page_text)
             if m:
                 result["reg_no"] = m.group()
             if not result["reg_no"]:
-                m = re.search(r"\b\d{10}\b", page_text)
+                m = re.search(r"\b[A-Z]{2,4}\d{2}[A-Z]\d{7,}\b", page_text)
                 if m:
                     result["reg_no"] = m.group()
             if not result["reg_no"]:
-                m = re.search(r"\b[A-Z]{1,3}\d{5,}\b", page_text)
+                for match in re.finditer(r"\b(\d{10})\b", page_text):
+                    val = match.group(1)
+                    if not val.startswith("1012"):
+                        result["reg_no"] = val
+                        break
+            if not result["reg_no"]:
+                m = re.search(r"\b[A-Z]{1,3}\d{5,9}\b", page_text)
                 if m:
                     result["reg_no"] = m.group()
 
@@ -78,34 +87,45 @@ class OfficialVerifier:
                 if m:
                     result["candidate_name"] = m.group(1).strip()
 
-            # Institution — find actual school name, skip board headers
-            lines = page_text.split(" . ")
-
-            # First try: anchor on "NAME OF THE SCHOOL"
-            for i, line in enumerate(lines):
-                if "NAME OF THE SCHOOL" in line:
-                    for j in range(i, min(i + 3, len(lines))):
-                        seg = lines[j].strip()
-                        if any(kw in seg for kw in _SCHOOL_KEYWORDS) and \
-                           not any(noise in seg for noise in _BOARD_NOISE):
-                            result["institution"] = seg
-                            break
-                    if result["institution"]:
-                        break
-
-            # Fallback: any school-keyword line not in noise list
-            if not result["institution"]:
-                for line in lines:
-                    if any(kw in line for kw in _SCHOOL_KEYWORDS) and \
-                       not any(noise in line for noise in _BOARD_NOISE):
-                        result["institution"] = line.strip()
-                        break
+            # Institution — search full raw text directly
+            # Official page has: "NAME OF THE SCHOOL பள்ளியின் பெயர் ... T V S GOVT HR SEC SCHOOL THIRUKKURUNGUDI"
+            result["institution"] = self._extract_institution_from_text(page_text)
 
             print("OFFICIAL DATA EXTRACTED:", result)
             return result
 
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _extract_institution_from_text(self, page_text: str) -> str | None:
+        """Extract school name from flat official page text."""
+
+        # Strategy 1: after NAME OF THE SCHOOL anchor
+        m = re.search(
+            r"NAME OF THE SCHOOL[^A-Z]*([A-Z][A-Z\s]{5,60}?)(?:\s+IP ADDRESS|\s+DATE|\s*$)",
+            page_text,
+            re.DOTALL,
+        )
+        if m:
+            candidate = m.group(1).strip()
+            candidate = re.sub(r'\s+', ' ', candidate)
+            if any(kw in candidate for kw in _SCHOOL_KEYWORDS) and \
+               not any(noise in candidate for noise in _BOARD_NOISE):
+                return candidate
+
+        # Strategy 2: find school name pattern directly in text
+        # Matches "T V S GOVT HR SEC SCHOOL THIRUKKURUNGUDI" style
+        for pattern in [
+            r'\b([A-Z][A-Z\s]*(?:GOVT|GOVERNMENT)[A-Z\s]*(?:HR SEC|HIGH SCHOOL|SCHOOL)[A-Z\s]{3,40})\b',
+            r'\b([A-Z][A-Z\s]*(?:HR SEC|MATRICULATION|AIDED)[A-Z\s]*SCHOOL[A-Z\s]{3,40})\b',
+        ]:
+            m = re.search(pattern, page_text)
+            if m:
+                candidate = re.sub(r'\s+', ' ', m.group(1).strip())
+                if not any(noise in candidate for noise in _BOARD_NOISE):
+                    return candidate
+
+        return None
 
     @staticmethod
     def clean_text(text) -> str:
@@ -124,10 +144,16 @@ class OfficialVerifier:
         if checks["roll_no_match"]:
             score += 20
 
-        # Register number
+        # Register number — compare the permanent reg from OCR vs J-code from official
+        # Both identify the same student so we cross-match too
         ocr_reg = self.clean_text(ocr_data.get("reg_no"))
         off_reg = self.clean_text(official_data.get("reg_no"))
-        checks["reg_no_match"] = ocr_reg == off_reg and bool(ocr_reg)
+        # Direct match
+        reg_match = ocr_reg == off_reg and bool(ocr_reg)
+        # Also check if OCR permanent reg matches what's in official raw text
+        if not reg_match and ocr_reg and official_data.get("raw_text"):
+            reg_match = ocr_reg in official_data["raw_text"].upper()
+        checks["reg_no_match"] = reg_match
         if checks["reg_no_match"]:
             score += 20
 
@@ -147,17 +173,20 @@ class OfficialVerifier:
         if checks["total_marks_match"]:
             score += 20
 
-        # Institution — compare actual school names
+        # Institution — word overlap between OCR and official
         ocr_inst = re.sub(r"^\d+\s*", "", self.clean_text(ocr_data.get("institution")))
         off_inst = self.clean_text(official_data.get("institution"))
 
-        if ocr_inst and off_inst:
-            # Partial match — school names often have OCR noise
+        # Fallback: search OCR institution words in official raw text
+        if not off_inst and official_data.get("raw_text") and ocr_inst:
+            off_inst_raw = official_data["raw_text"].upper()
+            ocr_words = {w for w in ocr_inst.split() if len(w) > 3}
+            hits = sum(1 for w in ocr_words if w in off_inst_raw)
+            checks["institution_match"] = hits >= 2
+        elif ocr_inst and off_inst:
             ocr_words = set(ocr_inst.split())
             off_words = set(off_inst.split())
-            common = ocr_words & off_words
-            # Need at least 2 meaningful words in common
-            meaningful = {w for w in common if len(w) > 3}
+            meaningful = {w for w in (ocr_words & off_words) if len(w) > 3}
             checks["institution_match"] = len(meaningful) >= 2
         else:
             checks["institution_match"] = False
