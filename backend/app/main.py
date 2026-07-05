@@ -49,7 +49,6 @@ def health():
 async def verify_certificate(file: UploadFile = File(...)):
 
     print("API CALLED — file:", file.filename)
-
     contents = await file.read()
 
     if len(contents) > MAX_UPLOAD_BYTES:
@@ -86,15 +85,11 @@ async def verify_certificate(file: UploadFile = File(...)):
 
         print("IMAGE SIZE:", img.shape)
 
-        # ===============================
-        # DESKEW (images only, not PDFs)
-        # ===============================
+        # Only deskew images, not PDFs
         if not is_pdf:
             img = ai_engine.deskew(img)
 
-        # ===============================
-        # ENHANCE
-        # ===============================
+        # Enhance — no upscale for PDFs
         img = ai_engine.enhance(img, is_pdf=is_pdf)
 
         # ==========================
@@ -122,7 +117,9 @@ async def verify_certificate(file: UploadFile = File(...)):
 
             if official_data.get("success"):
                 try:
-                    comparison = official_verifier.compare_records(ocr_results, official_data)
+                    comparison = official_verifier.compare_records(
+                        ocr_results, official_data
+                    )
                     print("COMPARISON =", comparison)
                     official_score = comparison["score"] / 100.0
                 except Exception as e:
@@ -144,9 +141,6 @@ async def verify_certificate(file: UploadFile = File(...)):
 
         print("AI SCORE:", ai_score, "| TAMPER:", tamper_score)
 
-        # ==========================
-        # QR AUTHENTICITY
-        # ==========================
         qr_authentic = qr_results.get("domain_authenticity", False)
 
         # ==========================
@@ -181,9 +175,6 @@ async def verify_certificate(file: UploadFile = File(...)):
         else:
             final_verdict = "SUSPICIOUS"
 
-        # ==========================
-        # RESPONSE
-        # ==========================
         return {
             "final_decision": final_verdict,
             "confidence_score": confidence,
