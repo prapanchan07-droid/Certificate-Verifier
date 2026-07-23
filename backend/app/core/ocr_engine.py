@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import cv2
+from matplotlib import lines
 import pytesseract
 import numpy as np
 import re
@@ -138,27 +141,38 @@ class OCREngine:
             if "மொத்த" in line or ("TOTAL" in line and "MARK" in line):
                 anchor = i
                 break
-        if anchor is None:
-            return None
 
-        window = " ".join(lines[anchor:anchor + 3])
-        sp = window.upper().find("MARKS")
-        segment = window[sp + 5:] if sp != -1 else window
-        if ":" in segment:
-            segment = segment.split(":", 1)[1]
-        clean = re.sub(r"\([^)]*\)", " ", segment)
+        if anchor is not None:
+            window = " ".join(lines[anchor:anchor + 3])
+            sp = window.upper().find("MARKS")
+            segment = window[sp + 5:] if sp != -1 else window
+            if ":" in segment:
+                segment = segment.split(":", 1)[1]
+            clean = re.sub(r"\([^)]*\)", " ", segment)
 
-        dm = re.search(r"\b(\d{3,4})\b", clean)
-        if dm:
-            return dm.group(1)
+            dm = re.search(r"\b(\d{3,4})\b", clean)
+            if dm:
+                return dm.group(1)
 
-        words = {"ZERO": "0", "ONE": "1", "TWO": "2", "THREE": "3",
-                 "FOUR": "4", "FIVE": "5", "SIX": "6", "SEVEN": "7",
-                 "EIGHT": "8", "NINE": "9"}
-        tokens = re.findall(r"[A-Z]+", clean.upper())
-        digits = [words[t] for t in tokens if t in words]
-        if len(digits) >= 3:
-            return "".join(digits[:4])
+            words = {"ZERO": "0", "ONE": "1", "TWO": "2", "THREE": "3",
+                     "FOUR": "4", "FIVE": "5", "SIX": "6", "SEVEN": "7",
+                     "EIGHT": "8", "NINE": "9"}
+            tokens = re.findall(r"[A-Z]+", clean.upper())
+            digits = [words[t] for t in tokens if t in words]
+            if len(digits) >= 3:
+                return "".join(digits[:4])
+
+        # Fallback: the TOTAL MARKS row is the only mark line trailed by
+        # the word "PASS" -- subject rows are trailed by the shorter
+        # "(P)" instead. This survives even when OCR mangles the "TOTAL
+        # MARKS" label itself (confirmed case: "TOTAL" misread as
+        # "TOTAR" merged into "MARKS" with no space, breaking the
+        # anchor search above).
+        for dm in re.finditer(r"\b(\d{3,4})\b", text_dump):
+            tail = text_dump[dm.end():dm.end() + 40].upper()
+            if "PASS" in tail or "ASS)" in tail or "ASS " in tail:
+                return dm.group(1)
+
         return None
 
     def _extract_candidate_name(self, text_dump: str, lines: list) -> str | None:
@@ -169,16 +183,17 @@ class OCREngine:
         Pattern: strip garbage → extract name before session token.
         """
 
-        # Pattern 1: name + session on same line (most common in this cert)
-        # e.g. "ல MUTHU KRISHNAN N APR 2023" or "MUTHU KRISHNAN N APR 2023"
         session_re = re.compile(_SESSIONS + r'\s+\d{4}')
         for line in lines:
             if session_re.search(line):
                 # Strip everything before the first capital English letter
                 cleaned = re.sub(r'^[^A-Z]+', '', line.strip())
-                # Remove the session+year suffix
-                name_part = session_re.sub('', cleaned).strip()
-                # Remove trailing garbage
+                # Keep ONLY text before the session token. Anything after
+                # it (e.g. a trailing "P" or "FY") is watermark/border
+                # bleed-through on this template, confirmed by direct
+                # inspection of raw OCR output -- not part of the name.
+                m2 = session_re.search(cleaned)
+                name_part = cleaned[:m2.start()].strip() if m2 else cleaned
                 name_part = re.sub(r'[^A-Z\s\.]', '', name_part).strip()
                 if _looks_like_name(name_part):
                     print(f"NAME P1 (same line): {name_part}")
@@ -227,8 +242,12 @@ class OCREngine:
     def _extract_institution(self, lines: list) -> str | None:
 
         def _clean(s):
-            s = re.sub(r"^[^A-Z0-9]+", "", s.strip())
-            s = re.sub(r"[^A-Z0-9.,&()\-\s]+$", "", s).strip()
+            # Strip ALL leading non-alpha-numeric garbage including digits+space
+            s = re.sub(r'^[\W\d_]+', '', s.strip())
+            # Strip trailing non-alphanumeric garbage
+            s = re.sub(r'[\W]+$', '', s).strip()
+            # Remove OCR artifacts like backslash, quotes
+            s = re.sub(r"[\\'\"`]+", "", s).strip()
             return s
 
         # Strategy 1: anchor on NAME OF THE SCHOOL
@@ -245,7 +264,7 @@ class OCREngine:
                         return candidate
                 break
 
-        # Strategy 2: scan lines
+        # Strategy 2: scan lines for English school name
         for line in lines:
             upper = _clean(line.upper())
             if not _is_english(upper):
@@ -258,7 +277,6 @@ class OCREngine:
                 return upper
 
         return None
-
     def extract_details(self, img_bytes: bytes) -> dict:
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)

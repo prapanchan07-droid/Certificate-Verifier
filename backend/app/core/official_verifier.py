@@ -1,3 +1,4 @@
+from __future__ import annotations
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -87,6 +88,15 @@ class OfficialVerifier:
                 if m:
                     result["candidate_name"] = m.group(1).strip()
 
+            # Strip a trailing session-month token that the fallback name
+            # regex can accidentally swallow (e.g. "SRISABARI S APR" ->
+            # "SRISABARI S") -- confirmed bug, same root cause as ocr_engine.
+            if result["candidate_name"]:
+                result["candidate_name"] = re.sub(
+                    r'\s+(APR|MAR|OCT|NOV|DEC|JAN|FEB)$', '',
+                    result["candidate_name"]  
+                ).strip()
+
             # Institution — search full raw text directly
             # Official page has: "NAME OF THE SCHOOL பள்ளியின் பெயர் ... T V S GOVT HR SEC SCHOOL THIRUKKURUNGUDI"
             result["institution"] = self._extract_institution_from_text(page_text)
@@ -98,32 +108,32 @@ class OfficialVerifier:
             return {"success": False, "error": str(e)}
 
     def _extract_institution_from_text(self, page_text: str) -> str | None:
-        """Extract school name from flat official page text."""
+        """
+        Extract school name from flat official page text. The page lists
+        the Tamil name first, then the English name (with punctuation like
+        commas), then "IP ADDRESS" -- confirmed by direct inspection of a
+        real fetched page. Anchor on the label, slice up to the next known
+        field, then take the run of Latin letters/commas/spaces in that
+        slice (skips the Tamil text automatically since it isn't A-Z).
+        """
+        idx = page_text.find("NAME OF THE SCHOOL")
+        if idx == -1:
+            return None
 
-        # Strategy 1: after NAME OF THE SCHOOL anchor
-        m = re.search(
-            r"NAME OF THE SCHOOL[^A-Z]*([A-Z][A-Z\s]{5,60}?)(?:\s+IP ADDRESS|\s+DATE|\s*$)",
-            page_text,
-            re.DOTALL,
-        )
-        if m:
-            candidate = m.group(1).strip()
-            candidate = re.sub(r'\s+', ' ', candidate)
-            if any(kw in candidate for kw in _SCHOOL_KEYWORDS) and \
-               not any(noise in candidate for noise in _BOARD_NOISE):
+        after = page_text[idx + len("NAME OF THE SCHOOL"):]
+        end_idx = len(after)
+        for stop_word in ("IP ADDRESS", "DATE & TIME", "DATE &TIME", "DATE&TIME"):
+            pos = after.find(stop_word)
+            if pos != -1:
+                end_idx = min(end_idx, pos)
+        segment = after[:end_idx]
+
+        runs = re.findall(r"[A-Z][A-Z,\s]{4,80}", segment)
+        if runs:
+            candidate = re.sub(r'\s+', ' ', runs[-1]).strip().strip(',').strip()
+            if candidate and candidate != "NAME OF THE SCHOOL" \
+                    and not any(noise in candidate for noise in _BOARD_NOISE):
                 return candidate
-
-        # Strategy 2: find school name pattern directly in text
-        # Matches "T V S GOVT HR SEC SCHOOL THIRUKKURUNGUDI" style
-        for pattern in [
-            r'\b([A-Z][A-Z\s]*(?:GOVT|GOVERNMENT)[A-Z\s]*(?:HR SEC|HIGH SCHOOL|SCHOOL)[A-Z\s]{3,40})\b',
-            r'\b([A-Z][A-Z\s]*(?:HR SEC|MATRICULATION|AIDED)[A-Z\s]*SCHOOL[A-Z\s]{3,40})\b',
-        ]:
-            m = re.search(pattern, page_text)
-            if m:
-                candidate = re.sub(r'\s+', ' ', m.group(1).strip())
-                if not any(noise in candidate for noise in _BOARD_NOISE):
-                    return candidate
 
         return None
 

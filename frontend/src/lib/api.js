@@ -1,10 +1,9 @@
-const API_BASE_URL = "http://3.91.58.234:8000";
 // const API_BASE_URL = "https://certificate-verifier-dayu.onrender.com";
 
 export async function verifyCertificate(file) {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch(`${API_BASE_URL}/api/verify`, {
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/verify`, {
     method: "POST",
     body: formData,
   });
@@ -13,7 +12,7 @@ export async function verifyCertificate(file) {
 }
 
 export async function downloadReport(results) {
-  const response = await fetch(`${API_BASE_URL}/api/report`, {
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/report`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(results),

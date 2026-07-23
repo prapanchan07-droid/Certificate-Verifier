@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 import cv2
 import numpy as np
 import os
+import sys
 
 from pdf2image import convert_from_bytes
 
@@ -13,6 +14,13 @@ from app.core.ocr_engine import OCREngine
 from app.core.qr_engine import QREngine
 from app.core.official_verifier import OfficialVerifier
 from app.core.report_generator import generate_pdf_report
+
+# ==========================
+# ML ADDON — CNN + RandomForest/XGBoost decision layer + Gemini explanation
+# ==========================
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ml_engine"))
+from ml_verifier import MLVerifier
+from explanation_engine import explain_verdict
 
 app = FastAPI(title="CertifyX — Certificate Verification API")
 
@@ -31,6 +39,13 @@ ocr_engine = OCREngine()
 qr_engine = QREngine()
 official_verifier = OfficialVerifier()
 
+# .available is False if cnn_tamper_model.pt / tabular_model.joblib aren't
+# found in ml_engine/ -- in that case the endpoint falls back to the
+# original hand-weighted formula below, so this is safe to deploy even
+# before/without training.
+ml_verifier = MLVerifier()
+print("ML VERIFIER AVAILABLE:", ml_verifier.available)
+
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +54,7 @@ TEMPLATE_PATH = os.path.join(_HERE, "..", "templates", "tn_10th_template.png")
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "CertifyX"}
+    return {"status": "ok", "service": "CertifyX", "ml_available": ml_verifier.available}
 
 
 @app.post("/api/verify")
@@ -126,6 +141,31 @@ async def verify_certificate(file: UploadFile = File(...)):
                 official_unavailable = True
 
         # ==========================
+        # DISPLAY METADATA — prefer the official government record (clean
+        # HTML text, not an OCR'd photograph) whenever it's available.
+        # Only fall back to OCR-extracted fields when there's no QR / no
+        # reachable official record to compare against.
+        # ==========================
+        if official_data.get("success"):
+            display_metadata = {
+                "candidate_name": official_data.get("candidate_name") or ocr_results.get("candidate_name"),
+                "roll_no": official_data.get("roll_no") or ocr_results.get("roll_no"),
+                "reg_no": official_data.get("reg_no") or ocr_results.get("reg_no"),
+                "total_marks": official_data.get("total_marks") or ocr_results.get("total_marks"),
+                "institution": official_data.get("institution") or ocr_results.get("institution"),
+                "source": "official_record",
+            }
+        else:
+            display_metadata = {
+                "candidate_name": ocr_results.get("candidate_name"),
+                "roll_no": ocr_results.get("roll_no"),
+                "reg_no": ocr_results.get("reg_no"),
+                "total_marks": ocr_results.get("total_marks"),
+                "institution": ocr_results.get("institution"),
+                "source": "ocr_extraction",
+            }
+        
+        # ==========================
         # AI TAMPER ANALYSIS
         # ==========================
         template = cv2.imread(TEMPLATE_PATH)
@@ -141,7 +181,8 @@ async def verify_certificate(file: UploadFile = File(...)):
         qr_authentic = qr_results.get("domain_authenticity", False)
 
         # ==========================
-        # CONFIDENCE
+        # CONFIDENCE (original hand-weighted formula — kept as the
+        # fallback path if the trained ML models aren't available)
         # ==========================
         if official_unavailable:
             confidence = int((
@@ -161,7 +202,8 @@ async def verify_certificate(file: UploadFile = File(...)):
                 confidence = 95
 
         # ==========================
-        # FINAL DECISION
+        # FINAL DECISION (original formula-based verdict — kept as the
+        # fallback path if the trained ML models aren't available)
         # ==========================
         if official_unavailable:
             final_verdict = "UNVERIFIED"
@@ -172,12 +214,76 @@ async def verify_certificate(file: UploadFile = File(...)):
         else:
             final_verdict = "SUSPICIOUS"
 
+        # ==========================
+        # ML DECISION LAYER (CNN + RandomForest/XGBoost) — overrides the
+        # formula-based verdict/confidence above when trained models are
+        # available. Never breaks the endpoint if models are missing or
+        # inference fails for any reason.
+        # ==========================
+        ml_block = None
+        if ml_verifier.available:
+            try:
+                features = ml_verifier.build_features(
+                    img, ai_score, tamper_score, qr_results, comparison, ocr_results
+                )
+                ml_verdict, ml_confidence, contributions = ml_verifier.predict(features)
+                ml_block = {
+                    "verdict": ml_verdict,
+                    "confidence": round(ml_confidence * 100),
+                    "top_factors": contributions,
+                }
+
+                # Trained model's raw output, before any override — kept
+                # for transparency/debugging.
+                ml_block["raw_verdict"] = ml_verdict
+                ml_block["raw_confidence"] = ml_block["confidence"]
+
+                final_verdict = ml_verdict
+                confidence = ml_block["confidence"]
+
+                # SAFETY OVERRIDE: a 100% match against the live government
+                # database plus an authentic QR domain is a stronger, more
+                # reliable signal than the CV-based tamper score, which is
+                # sensitive to photo angle/lighting/compression and can
+                # misfire on genuine documents. Never let the model call
+                # FAKE when the official record fully confirms the document.
+                if comparison and comparison["score"] == 100 and qr_authentic:
+                    if final_verdict in ("FAKE", "SUSPICIOUS"):
+                        final_verdict = "GENUINE"
+                    confidence = max(confidence, 90)
+                    ml_block["override_applied"] = (
+                        "Official record fully matched — verdict adjusted "
+                        "from model output to reflect this."
+                    )
+
+                # Generate the explanation from the FINAL (possibly
+                # overridden) verdict/confidence, so the text always
+                # matches what the user actually sees on screen.
+                ml_block["verdict"] = final_verdict
+                ml_block["confidence"] = confidence
+
+                explanation = explain_verdict(
+                    verdict=final_verdict,
+                    confidence=confidence,
+                    checks=comparison["checks"] if comparison else {},
+                    qr_authentic=qr_authentic,
+                    tamper_score=tamper_score,
+                    top_factors=ml_block["top_factors"],
+                    ocr_results=ocr_results,
+                )
+                ml_block["explanation"] = explanation["explanation"]
+                ml_block["explanation_source"] = explanation["source"]
+            except Exception as e:
+                print("ML VERIFIER ERROR (falling back to formula):", e)
+                ml_block = None
+
         return {
             "final_decision": final_verdict,
             "confidence_score": confidence,
             "ai_match_score": round(ai_score, 2),
             "tamper_probability": round(tamper_score, 2),
             "extracted_metadata": ocr_results,
+            "display_metadata": display_metadata,
             "qr_verification": qr_results,
             "official_verification": {
                 "score": comparison["score"] if comparison else 0,
@@ -189,6 +295,7 @@ async def verify_certificate(file: UploadFile = File(...)):
                 ),
                 "error": official_data.get("error") if official_unavailable else None,
             },
+            "ml_verification": ml_block,
         }
 
     except HTTPException:
@@ -218,6 +325,8 @@ async def verify_certificate(file: UploadFile = File(...)):
                 "domain": None,
                 "domain_authenticity": False,
             },
+            "display_metadata": None,
+            "ml_verification": None,
         }
 
 

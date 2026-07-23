@@ -71,6 +71,68 @@ function EmptyState() {
   );
 }
 
+// Marksheet-style details card — shows official data when available,
+// falls back to OCR when QR not found or official record unreachable.
+function DetailsCard({ displayMetadata, checks, hasOfficialData }) {
+  const fromOfficial = displayMetadata?.source === "official_record";
+
+  const fields = [
+    { label: "Candidate",       key: "candidate_name", checkKey: "candidate_name_match" },
+    { label: "Roll number",     key: "roll_no",        checkKey: "roll_no_match" },
+    { label: "Register number", key: "reg_no",         checkKey: "reg_no_match" },
+    { label: "Total marks",     key: "total_marks",    checkKey: "total_marks_match" },
+    { label: "Institution",     key: "institution",    checkKey: "institution_match" },
+  ];
+
+  return (
+    <div className="bg-white/60 border border-paper-line rounded-sm p-6">
+      <div className="flex items-center justify-between pb-2 mb-3 border-b border-paper-line gap-2 flex-wrap">
+        <h3 className="font-display text-base text-ink">Printed details</h3>
+        {fromOfficial ? (
+          <span className="text-xs font-mono text-registrar bg-registrar/10
+            px-2 py-0.5 rounded-sm flex items-center gap-1">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="2.5"
+                strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Official record
+          </span>
+        ) : (
+          <span className="text-xs font-mono text-caution bg-caution/10
+            px-2 py-0.5 rounded-sm">
+            OCR extracted
+          </span>
+        )}
+      </div>
+
+      <div>
+        {fields.map(({ label, key, checkKey }) => {
+          // Only show match/mismatch colour when we have official data to compare
+          const matched = hasOfficialData
+            ? (checks[checkKey] === true ? true : checks[checkKey] === false ? false : undefined)
+            : undefined;
+          return (
+            <LedgerRow
+              key={key}
+              label={label}
+              value={displayMetadata?.[key]}
+              matched={matched}
+            />
+          );
+        })}
+      </div>
+
+      {!fromOfficial && (
+        <p className="text-xs text-ink-soft/60 mt-3 pt-2 border-t border-paper-line">
+          {displayMetadata
+            ? "QR code not found or official record unreachable — details extracted by OCR and may contain minor errors."
+            : "No details could be extracted from this certificate."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard({ results, loading }) {
   if (loading) return <LoadingState />;
   if (!results) return <EmptyState />;
@@ -79,8 +141,10 @@ export default function Dashboard({ results, loading }) {
     final_decision,
     confidence_score,
     extracted_metadata,
+    display_metadata,
     qr_verification,
     official_verification,
+    ml_verification,
   } = results;
 
   if (final_decision === "ERROR") {
@@ -108,9 +172,17 @@ export default function Dashboard({ results, loading }) {
   const hasOfficialData = officialStatus === "MATCHED";
   const matchCount = Object.values(checks).filter(Boolean).length;
   const totalChecks = Object.keys(CHECK_LABELS).length;
+  const verdictMessage = VERDICT_MESSAGES[final_decision] ?? "Result inconclusive.";
 
-  const verdictMessage =
-    VERDICT_MESSAGES[final_decision] ?? "Result inconclusive.";
+  // Use display_metadata (official > OCR) if available, fall back to extracted_metadata
+  const shownData = display_metadata || {
+    candidate_name: extracted_metadata?.candidate_name,
+    roll_no:        extracted_metadata?.roll_no,
+    reg_no:         extracted_metadata?.reg_no,
+    total_marks:    extracted_metadata?.total_marks,
+    institution:    extracted_metadata?.institution,
+    source:         "ocr_extraction",
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -121,18 +193,22 @@ export default function Dashboard({ results, loading }) {
         flex items-center gap-6 flex-wrap">
         <VerdictStamp verdict={final_decision} confidence={confidence_score} />
         <div className="flex-1 min-w-[180px]">
-          <p className="text-xs uppercase tracking-widest text-ink-soft mb-1">
-            Result
-          </p>
+          <p className="text-xs uppercase tracking-widest text-ink-soft mb-1">Result</p>
           <p className="font-display text-2xl text-ink mb-2">{verdictMessage}</p>
           <p className="text-sm text-ink-soft">
             Confidence:{" "}
             <span className="font-mono text-ink">{confidence_score}%</span>
           </p>
+          {/* ML explanation if available */}
+          {ml_verification?.explanation && (
+            <p className="text-sm text-ink-soft mt-2 pt-2 border-t border-paper-line">
+              {ml_verification.explanation}
+            </p>
+          )}
         </div>
       </div>
 
-      {/* Official record */}
+      {/* Official record checks */}
       <div className="bg-white/60 border border-paper-line rounded-sm p-6">
         <div className="flex items-baseline justify-between mb-4 gap-4 flex-wrap">
           <h3 className="font-display text-lg text-ink">
@@ -165,19 +241,17 @@ export default function Dashboard({ results, loading }) {
         )}
       </div>
 
-      {/* OCR + QR */}
+      {/* Details + QR */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white/60 border border-paper-line rounded-sm p-6">
-          <h3 className="font-display text-base text-ink border-b border-paper-line pb-2 mb-3">
-            Printed details
-          </h3>
-          <LedgerRow label="Candidate"       value={extracted_metadata?.candidate_name} />
-          <LedgerRow label="Roll number"     value={extracted_metadata?.roll_no} />
-          <LedgerRow label="Register number" value={extracted_metadata?.reg_no} />
-          <LedgerRow label="Total marks"     value={extracted_metadata?.total_marks} />
-          <LedgerRow label="Institution"     value={extracted_metadata?.institution} />
-        </div>
 
+        {/* Marksheet details card */}
+        <DetailsCard
+          displayMetadata={shownData}
+          checks={checks}
+          hasOfficialData={hasOfficialData}
+        />
+
+        {/* QR card */}
         <div className="bg-white/60 border border-paper-line rounded-sm p-6">
           <h3 className="font-display text-base text-ink border-b border-paper-line pb-2 mb-3">
             QR code
@@ -195,12 +269,47 @@ export default function Dashboard({ results, loading }) {
               </p>
             </div>
           ) : (
-            <p className="text-sm text-ink-soft">
-              No QR code was found on this certificate.
-            </p>
+            <div className="space-y-3">
+              <p className="text-sm text-ink-soft">
+                No QR code was found on this certificate.
+              </p>
+              <p className="text-xs text-caution bg-caution/10 rounded-sm px-3 py-2">
+                Without a QR code the details shown are extracted by OCR and
+                cannot be cross-checked against the issuing board's record.
+              </p>
+            </div>
           )}
         </div>
       </div>
+
+      {/* ML feature breakdown — shown when available */}
+      {ml_verification?.top_factors?.length > 0 && (
+        <div className="bg-white/60 border border-paper-line rounded-sm p-6">
+          <h3 className="font-display text-base text-ink border-b border-paper-line pb-2 mb-4">
+            AI model — top decision factors
+          </h3>
+          <div className="space-y-3">
+            {ml_verification.top_factors.slice(0, 6).map((f) => (
+              <div key={f.feature}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-ink-soft font-mono">
+                    {f.feature.replace(/_/g, " ")}
+                  </span>
+                  <span className="text-ink font-mono">
+                    value {f.value} · weight {f.importance}
+                  </span>
+                </div>
+                <div className="h-1 bg-paper-line/50 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-steel transition-all duration-700"
+                    style={{ width: `${Math.round(f.importance * 100 * 5)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <ReportDownloader results={results} />
     </motion.div>
