@@ -231,6 +231,7 @@ async def verify_certificate(file: UploadFile = File(...)):
                     "verdict": ml_verdict,
                     "confidence": round(ml_confidence * 100),
                     "top_factors": contributions,
+                    "model_type": type(ml_verifier.tabular_model).__name__,
                 }
 
                 # Trained model's raw output, before any override — kept
