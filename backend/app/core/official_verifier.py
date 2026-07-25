@@ -107,7 +107,7 @@ class OfficialVerifier:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _extract_institution_from_text(self, page_text: str) -> str | None:
+    def _extract_institution_from_text(self, page_text: str) -> Optional[str]:
         """
         Extract school name from flat official page text. The page lists
         the Tamil name first, then the English name (with punctuation like

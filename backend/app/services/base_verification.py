@@ -194,16 +194,28 @@ class BaseVerificationService(ABC):
             features = ml_verifier.build_features(
                 img, ai_score, tamper_score, qr_results, comparison, ocr_results
             )
-            ml_verdict, ml_confidence, contributions = ml_verifier.predict(features)
+            (
+                ml_verdict,
+                ml_confidence,
+                contributions,
+                cnn_probability,
+                rf_probability,
+            ) = ml_verifier.predict(features)
             print("RAW ML CONFIDENCE:", ml_confidence)
 
             ml_block = {
                 "verdict": ml_verdict,
                 "confidence": round(ml_confidence * 100),
+
+                # NEW
+                "cnn_tamper_prob": cnn_probability,
+                "rf_probability": rf_probability,
+
                 "top_factors": contributions,
                 "model_type": type(ml_verifier.tabular_model).__name__,
                 "raw_verdict": ml_verdict,
             }
+            
             ml_block["raw_confidence"] = ml_block["confidence"]
 
             final_verdict = ml_verdict

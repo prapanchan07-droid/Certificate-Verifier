@@ -13,6 +13,9 @@ import os
 import numpy as np
 import cv2
 import joblib
+import pandas as pd
+from typing import Optional
+
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CNN_PATH = os.path.join(_HERE, "cnn_tamper_model.pt")
@@ -93,7 +96,7 @@ class MLVerifier:
         ai_score: float,
         tamper_score: float,
         qr_results: dict,
-        comparison: dict | None,
+        comparison: Optional[dict],
         ocr_results: dict,
     ) -> dict:
         cnn_prob = self.cnn_tamper_prob(img)
@@ -126,18 +129,30 @@ class MLVerifier:
 
     def predict(self, features: dict):
         """Returns (verdict, probability_genuine, sorted_feature_contributions)."""
-        vec = np.array([[features[name] for name in FEATURE_NAMES]])
-        proba = self.tabular_model.predict_proba(vec)[0]
+
+        feature_df = pd.DataFrame(
+            [[features[name] for name in FEATURE_NAMES]],
+            columns=FEATURE_NAMES
+        )
         
+        print("=" * 60)
+        print("FEATURE VECTOR")
+        for col in FEATURE_NAMES:
+            print(f"{col:25}: {feature_df.iloc[0][col]}")
+        print("=" * 60)
+
+        proba = self.tabular_model.predict_proba(feature_df)[0]
+
         print("=" * 50)
         print("predict_proba:", proba)
         print("sum:", np.sum(proba))
         print("type:", type(proba))
         print("=" * 50)
 
-        # class 0 = genuine, class 1 = tampered (must match train_tabular.py labeling)
         p_tampered = float(proba[1])
         p_genuine = float(proba[0])
+        
+        print(self.tabular_model.classes_)
 
         if p_tampered >= 0.65:
             verdict = "FAKE"
@@ -147,7 +162,14 @@ class MLVerifier:
             verdict = "GENUINE"
 
         contributions = self._explain(features)
-        return verdict, p_genuine, contributions
+
+        return (
+            verdict,
+            p_genuine,
+            contributions,
+            features["cnn_tamper_prob"],
+            p_genuine,
+        )
 
     def _explain(self, features: dict):
         """Feature-importance-weighted contributions, for the explainability layer."""

@@ -41,7 +41,7 @@ class QREngine:
                 "domain_authenticity": False,
             }
 
-    def _try(self, detector, image) -> str | None:
+    def _try(self, detector, image) -> Optional[str]:
         try:
             qr_data, _, _ = detector.detectAndDecode(image)
             if qr_data and qr_data.strip():

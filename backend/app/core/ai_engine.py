@@ -122,7 +122,11 @@ class AIVerificationEngine:
         lap_bonus = min(lap_var / 5000.0, 0.1)
 
         tamper = float(np.clip(
-            (1.0 - ssim_score) + ela_penalty - lap_bonus, 0.0, 1.0
+            (1.0 - ssim_score) * 0.4
+            + ela_penalty * 0.4
+            - lap_bonus * 0.2,
+            0.0,
+            1.0,
         ))
         ai_score = float(np.clip(1.0 - tamper, 0.0, 1.0))
 

@@ -2,6 +2,7 @@ from fastapi import UploadFile, HTTPException
 import os
 import sys
 
+from app.decision.decision_engine import DecisionEngine
 from app.services.base_verification import BaseVerificationService
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +20,7 @@ class SSLCVerificationService(BaseVerificationService):
         super().__init__()
 
         self.ml_verifier = MLVerifier()
+        self.decision_engine = DecisionEngine()
         print("SSLC ML VERIFIER AVAILABLE:", self.ml_verifier.available)
 
         self.TEMPLATE_PATH = os.path.join(
@@ -87,6 +89,30 @@ class SSLCVerificationService(BaseVerificationService):
                 img, ai_score, tamper_score, qr_results, comparison,
                 ocr_results, qr_authentic, final_verdict, confidence,
             )
+            
+            print("=" * 60)
+            print("ML BLOCK")
+            print(ml_block)
+            print("=" * 60)
+
+            decision = self.decision_engine.evaluate(
+                qr_result=qr_results,
+                comparison=comparison,
+                ai_score=ai_score,
+                tamper_score=tamper_score,
+                cnn_probability=ml_block["cnn_tamper_prob"],
+                rf_result={
+                    "confidence": ml_block["rf_probability"]
+                }
+            )
+
+            final_verdict = decision["decision"]
+            confidence = decision["confidence"]
+
+            print("=" * 60)
+            print("DECISION ENGINE OUTPUT")
+            print(decision)
+            print("=" * 60)
 
             return self.build_response(
                 final_verdict, confidence, ai_score, tamper_score,
