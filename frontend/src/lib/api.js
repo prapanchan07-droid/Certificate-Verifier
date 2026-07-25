@@ -3,7 +3,7 @@
 export async function verifyCertificate(file) {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/verify`, {
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/academic/sslc`, {
     method: "POST",
     body: formData,
   });
