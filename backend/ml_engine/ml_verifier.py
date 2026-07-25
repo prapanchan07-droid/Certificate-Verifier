@@ -128,6 +128,13 @@ class MLVerifier:
         """Returns (verdict, probability_genuine, sorted_feature_contributions)."""
         vec = np.array([[features[name] for name in FEATURE_NAMES]])
         proba = self.tabular_model.predict_proba(vec)[0]
+        
+        print("=" * 50)
+        print("predict_proba:", proba)
+        print("sum:", np.sum(proba))
+        print("type:", type(proba))
+        print("=" * 50)
+
         # class 0 = genuine, class 1 = tampered (must match train_tabular.py labeling)
         p_tampered = float(proba[1])
         p_genuine = float(proba[0])
