@@ -137,6 +137,9 @@ export default function Dashboard({ results, loading }) {
   if (loading) return <LoadingState />;
   if (!results) return <EmptyState />;
 
+  console.log("Results:", results);
+  console.log("Confidence Score:", results.confidence_score);
+
   const {
     final_decision,
     confidence_score,

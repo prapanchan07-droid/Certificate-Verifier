@@ -195,6 +195,7 @@ class BaseVerificationService(ABC):
                 img, ai_score, tamper_score, qr_results, comparison, ocr_results
             )
             ml_verdict, ml_confidence, contributions = ml_verifier.predict(features)
+            print("RAW ML CONFIDENCE:", ml_confidence)
 
             ml_block = {
                 "verdict": ml_verdict,
