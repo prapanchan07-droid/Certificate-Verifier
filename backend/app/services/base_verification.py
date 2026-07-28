@@ -105,6 +105,10 @@ class BaseVerificationService(ABC):
             official_data = self.official_verifier.extract_official_data(qr_results["data"])
             print("OFFICIAL DATA")
             print(official_data)
+            
+            if official_data.get("success"):
+                if not ocr_results.get("roll_no"):
+                    ocr_results["roll_no"] = official_data.get("roll_no")
 
             if official_data.get("success"):
                 try:
@@ -119,6 +123,8 @@ class BaseVerificationService(ABC):
                 official_unavailable = True
 
         return official_data, comparison, official_score, official_unavailable
+    
+    
 
     def analyze_ai(self, img, template_path):
         template = cv2.imread(template_path) if template_path else None

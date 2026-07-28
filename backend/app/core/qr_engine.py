@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import tempfile
 import os
+from typing import Optional
 from urllib.parse import urlparse
 
 
