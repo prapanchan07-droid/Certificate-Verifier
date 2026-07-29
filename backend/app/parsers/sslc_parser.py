@@ -9,6 +9,7 @@ from .parser_utils import (
     _SESSIONS,
     _BOARD_NOISE,
     _SCHOOL_KEYWORDS,
+    _validate_name,
 )
 
 class SSLCParser(BaseParser):
@@ -147,22 +148,19 @@ class SSLCParser(BaseParser):
         So the name and session are on the SAME line with garbage prefix.
         Pattern: strip garbage → extract name before session token.
         """
-
         session_re = re.compile(_SESSIONS + r'\s+\d{4}')
+
+        # Pattern 1: name + session on the same line
         for line in lines:
             if session_re.search(line):
-                # Strip everything before the first capital English letter
                 cleaned = re.sub(r'^[^A-Z]+', '', line.strip())
-                # Keep ONLY text before the session token. Anything after
-                # it (e.g. a trailing "P" or "FY") is watermark/border
-                # bleed-through on this template, confirmed by direct
-                # inspection of raw OCR output -- not part of the name.
                 m2 = session_re.search(cleaned)
                 name_part = cleaned[:m2.start()].strip() if m2 else cleaned
                 name_part = re.sub(r'[^A-Z\s\.]', '', name_part).strip()
-                if _looks_like_name(name_part):
-                    print(f"NAME P1 (same line): {name_part}")
-                    return name_part
+                name = _validate_name(name_part)
+                if name:
+                    print(f"NAME P1: {name}")
+                    return name
 
         # Pattern 2: directly after NAME OF THE CANDIDATE label
         for i, line in enumerate(lines):
@@ -172,17 +170,19 @@ class SSLCParser(BaseParser):
                 after = re.sub(r'^[^A-Z]+', '', after).strip()
                 after = session_re.sub('', after).strip()
                 after = re.sub(r'[^A-Z\s\.]', '', after).strip()
-                if _looks_like_name(after):
-                    print(f"NAME P2a: {after}")
-                    return after
+                name = _validate_name(after)
+                if name:
+                    print(f"NAME P2a: {name}")
+                    return name
                 # Check next lines
                 for j in range(i + 1, min(i + 5, len(lines))):
                     candidate = re.sub(r'^[^A-Z]+', '', lines[j].strip())
                     candidate = session_re.sub('', candidate).strip()
                     candidate = re.sub(r'[^A-Z\s\.]', '', candidate).strip()
-                    if _looks_like_name(candidate):
-                        print(f"NAME P2b: {candidate}")
-                        return candidate
+                    name = _validate_name(candidate)
+                    if name:
+                        print(f"NAME P2b: {name}")
+                        return name
                 break
 
         # Pattern 3: scan all lines for name near session context
@@ -190,17 +190,17 @@ class SSLCParser(BaseParser):
             stripped = re.sub(r'^[^A-Z]+', '', line.strip())
             if not stripped:
                 continue
-            # Skip lines with digits
             if re.search(r'\d', stripped):
                 continue
-            if _looks_like_name(stripped):
+            name = _validate_name(stripped)
+            if name:
                 prev = lines[i - 1].strip() if i > 0 else ""
                 nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
                 context = prev + " " + nxt
                 if re.search(_SESSIONS, context) or "CANDIDATE" in context \
                         or "பெயர்" in context or "பருவம்" in context:
-                    print(f"NAME P3: {stripped}")
-                    return stripped
+                    print(f"NAME P3: {name}")
+                    return name
 
         return None
 
