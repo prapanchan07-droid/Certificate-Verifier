@@ -46,10 +46,18 @@ class OCREngine:
         )
 
     def _ocr(self, gray: np.ndarray, psm: int = 6) -> str:
+        cv2.imwrite("1_original.png", img)
+        cv2.imwrite("2_gray.png", gray)
+
+        enhanced, thresholded = self._prepare_variants(gray)
+
+        cv2.imwrite("3_enhanced.png", enhanced)
+        cv2.imwrite("4_threshold.png", thresholded)
         raw = pytesseract.image_to_string(
-            gray, lang="eng+tam", config=f"--psm {psm}"
+            gray,
+            lang="eng+tam",
+            config=f"--psm {psm}"
         )
-        return self._normalize_tamil_digits(raw.upper())
 
     # ------------------------------------------------------------------
     # Preprocessing
