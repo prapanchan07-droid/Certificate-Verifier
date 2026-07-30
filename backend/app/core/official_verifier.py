@@ -3,6 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
+from app.utils.fuzzy_match import FuzzyMatcher  # NEW — fuzzy name matching
+
 _BOARD_NOISE = [
     "STATE BOARD OF SCHOOL EXAMINATIONS",
     "DEPARTMENT OF GOVERNMENT EXAMINATIONS",
@@ -25,6 +27,24 @@ _DIGIT_WORDS = (
     "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE",
     "SIX", "SEVEN", "EIGHT", "NINE",
 )
+
+# Similarity threshold for fuzzy candidate-name matching. Measured
+# directly against confirmed real OCR outputs rather than guessed:
+#   "TAMUEUAN V"   vs official "TAMILELAN V"  -> 0.762 (real, should match)
+#   "SRISAPARIS I" vs official "SRISABARI S"  -> 0.783 (real, should match)
+#   "KAVYA R"      vs "DIVYA R" (different student) -> 0.714 (must NOT match)
+# 0.80 was rejecting both real cases above. 0.75 accepts both while still
+# sitting above the nearest-miss different-name pair found.
+
+
+# Minimum length (after whitespace-stripping) an institution string must
+# have before the plain substring check in _normalize_school is trusted.
+# Without a floor, a short OCR read like "SCHOOL" or "SEC" would be a
+# substring of nearly every institution name in this dataset and would
+# trivially "match" any school -- the floor ensures the shorter of the
+# two strings actually carries enough of the school's identity to mean
+# something.
+_MIN_SCHOOL_MATCH_LEN = 12
 
 
 class OfficialVerifier:
@@ -276,6 +296,27 @@ class OfficialVerifier:
         return re.sub(r"\s+", "", text)
 
     @staticmethod
+    def _school_match(ocr_inst: str, off_inst: str) -> bool:
+        """Whitespace-collapsed substring check, guarded by a minimum
+        length floor. Without the floor, a short/partial OCR read (e.g.
+        just "SCHOOL" or "SEC") would be a substring of virtually every
+        institution name in this dataset and would trivially "match"
+        any school on the register -- the floor requires the SHORTER of
+        the two normalized strings to carry enough of the school's
+        actual identity before the substring check is trusted."""
+        ocr = OfficialVerifier._normalize_school(ocr_inst)
+        official = OfficialVerifier._normalize_school(off_inst)
+
+        if not ocr or not official:
+            return False
+
+        shorter_len = min(len(ocr), len(official))
+        if shorter_len < _MIN_SCHOOL_MATCH_LEN:
+            return False
+
+        return ocr in official or official in ocr
+
+    @staticmethod
     def _marks_match(ocr_marks: str, off_marks: str) -> bool:
         """Exact match first. If that fails, also accept when the OCR
         value is a non-empty prefix of the official value at least 3
@@ -296,6 +337,53 @@ class OfficialVerifier:
             return True
         return False
 
+    @staticmethod
+    def _name_match(ocr_name: str, off_name: str) -> bool:
+        """
+        Candidate-name comparison used by both single-year (SSLC) and
+        HSC record comparisons.
+
+        Two behavioral changes vs. the previous exact/substring check:
+
+        1. FIX #3 -- Missing OCR name is not a mismatch. If OCR failed
+           to extract a name at all (ocr_name empty/None), there is
+           nothing to disagree with -- the QR-verified official name is
+           already authoritative and already flows through to
+           display_metadata via base_verification.build_display_metadata.
+           Scoring this as a mismatch penalizes the certificate's overall
+           verification score for an OCR *absence*, not an OCR
+           *disagreement*. Only applies when an official name exists to
+           fall back on; if both are missing, there's genuinely nothing
+           to verify and this returns False as before.
+
+        2. FIX #1 -- Fuzzy similarity instead of exact/substring. OCR
+           letter confusions (e.g. "TAMUEUAN V" vs "TAMILELAN V") are
+           common enough that a straight substring check misses valid
+           matches. FuzzyMatcher.is_match uses SequenceMatcher ratio,
+           which tolerates a handful of character-level misreads while
+           still rejecting genuinely different names.
+        """
+        if not ocr_name:
+            return bool(off_name)
+
+        if not off_name:
+            return False
+
+        # Fast path: exact or substring match (handles cases where one
+        # side has extra tokens, e.g. a middle initial the other lacks).
+        if ocr_name in off_name or off_name in ocr_name:
+            return True
+
+        comparison = FuzzyMatcher.compare(
+            ocr_name,
+            off_name
+        )
+        print(
+            f"NAME SCORE = {comparison['score']} | "
+            f"STATUS = {comparison['status']}"
+        )
+
+        return comparison["match"]
     def compare_records(self, ocr_data: dict, official_data: dict) -> dict:
         if official_data.get("years"):
             return self._compare_hsc_records(ocr_data, official_data)
@@ -345,9 +433,7 @@ class OfficialVerifier:
 
         ocr_name = self.clean_text(ocr_data.get("candidate_name"))
         off_name = self.clean_text(official_data.get("candidate_name"))
-        checks["candidate_name_match"] = bool(ocr_name) and (
-            ocr_name in off_name or off_name in ocr_name
-        )
+        checks["candidate_name_match"] = self._name_match(ocr_name, off_name)
         if checks["candidate_name_match"]:
             score += 20
 
@@ -359,17 +445,7 @@ class OfficialVerifier:
             hits = sum(1 for w in ocr_words if w in off_inst_raw)
             checks["institution_match"] = hits >= 2
         elif ocr_inst and off_inst:
-            ocr = self._normalize_school(ocr_inst)
-            official = self._normalize_school(off_inst)
-
-            print("OCR INST      :", repr(ocr_inst))
-            print("OFFICIAL INST :", repr(off_inst))
-
-            print("OCR NORMAL    :", repr(ocr))
-            print("OFF NORMAL    :", repr(official))
-            checks["institution_match"] = (
-                ocr in official or official in ocr
-            )
+            checks["institution_match"] = self._school_match(ocr_inst, off_inst)
         else:
             checks["institution_match"] = False
         if checks["institution_match"]:
@@ -398,9 +474,7 @@ class OfficialVerifier:
 
         ocr_name = self.clean_text(ocr_data.get("candidate_name"))
         off_name = self.clean_text(official_data.get("candidate_name"))
-        checks["candidate_name_match"] = bool(ocr_name) and (
-            ocr_name in off_name or off_name in ocr_name
-        )
+        checks["candidate_name_match"] = self._name_match(ocr_name, off_name)
         if checks["candidate_name_match"]:
             score += 20
 
@@ -419,17 +493,7 @@ class OfficialVerifier:
             hits = sum(1 for w in ocr_words if w in off_inst_raw)
             checks["institution_match"] = hits >= 2
         elif ocr_inst and off_inst:
-            ocr = self._normalize_school(ocr_inst)
-            official = self._normalize_school(off_inst)
-
-            print("OCR INST      :", repr(ocr_inst))
-            print("OFFICIAL INST :", repr(off_inst))
-
-            print("OCR NORMAL    :", repr(ocr))
-            print("OFF NORMAL    :", repr(official))
-            checks["institution_match"] = (
-                ocr in official or official in ocr
-            )
+            checks["institution_match"] = self._school_match(ocr_inst, off_inst)
         else:
             checks["institution_match"] = False
 

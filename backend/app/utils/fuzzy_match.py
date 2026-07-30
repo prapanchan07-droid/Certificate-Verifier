@@ -10,7 +10,9 @@ Used for:
 
 import re
 from difflib import SequenceMatcher
-
+MATCH_THRESHOLD = 0.90
+FUZZY_THRESHOLD = 0.80
+MIN_ACCEPT_THRESHOLD = 0.75
 
 class FuzzyMatcher:
 
@@ -55,27 +57,36 @@ class FuzzyMatcher:
         True if similarity >= threshold
         """
 
-        return (
-            FuzzyMatcher.similarity(a, b)
-            >= threshold
-        )
+        score = FuzzyMatcher.similarity(a, b)
+
+        return score >= threshold
 
 
     @staticmethod
-    def compare(a: str,
-                b: str,
-                threshold: float = 0.90):
+    def compare(
+        a: str,
+        b: str,
+        threshold: float = 0.90,
+    ):
 
         score = FuzzyMatcher.similarity(a, b)
 
+        if score >= MATCH_THRESHOLD:
+            status = "MATCH"
+
+        elif score >= FUZZY_THRESHOLD:
+            status = "FUZZY_MATCH"
+
+        elif score >= MIN_ACCEPT_THRESHOLD:
+            status = "LOW_CONFIDENCE"
+
+        else:
+            status = "MANUAL_REVIEW"
+
         return {
-
-            "match": score >= threshold,
-
+            "match": score >= MIN_ACCEPT_THRESHOLD,
+            "status": status,
             "score": round(score, 3),
-
             "ocr": a,
-
-            "official": b
-
+            "official": b,
         }

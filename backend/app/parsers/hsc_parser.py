@@ -182,34 +182,54 @@ class HSCParser(BaseParser):
                 end = i
                 break
 
+        # Fallback anchor: OCR sometimes drops/mangles the word "NAME"
+        # itself (confirmed case: "NAME" misread as garbled digits),
+        # so the full "NAME OF THE CANDIDATE" phrase never appears even
+        # though "OF THE CANDIDATE" does. Only used when the primary
+        # anchor fails entirely, since it's a weaker, shorter match.
+        if start is None:
+            for i, line in enumerate(lines):
+                u = line.upper()
+                if "OF THE CANDIDATE" in u:
+                    start = i
+                if start is not None and "DATE OF BIRTH" in u:
+                    end = i
+                    break
+
         if start is None:
             return None
 
         if end is None:
             end = min(len(lines), start + 8)
 
+        candidates = []
+
         for line in lines[start:end]:
             english = re.sub(r"[\u0B80-\u0BFF]+", " ", line)
-            english = re.sub(
-                r"NAME\s+OF\s+THE\s+CANDIDATE",
-                "",
-                english,
-                flags=re.I,
-            )
+
+            m = re.search(r"NAME\s+OF\s+THE\s+CANDIDATE", english, flags=re.I)
+            if m:
+                english = english[m.end():]
+            else:
+                m = re.search(r"OF\s+THE\s+CANDIDATE", english, flags=re.I)
+                if m:
+                    english = english[m.end():]
 
             cleaned = self._clean_name_line(english)
             words = cleaned.split()
 
-            # Trim to just the name portion FIRST, before deciding
-            # whether the line is "bad". A previous version checked
-            # _bad_name_line() on the untrimmed text, which meant a
-            # real name followed by garbage bleed (e.g. "PRAPANCHAN V
-            # YEAR" -- "YEAR" leaking in from the next field) got the
-            # WHOLE line discarded, even though trimming would have
-            # correctly reduced it to just "PRAPANCHAN V". Trimming
-            # first means the bad-line check only sees what's actually
-            # left after noise removal.
             words = self._trim_to_name(words)
+
+            # _clean_name_line intentionally keeps periods (for tokens
+            # like initials), but that means a valid single-letter
+            # initial can come through as "V." rather than "V" -- which
+            # then fails the isalpha()-or-length-1 check below even
+            # though it's a perfectly valid name token. Strip trailing
+            # periods before validating/joining rather than rejecting
+            # the whole candidate over punctuation.
+            words = [w.rstrip(".") for w in words]
+            words = [w for w in words if w]
+
             cleaned = " ".join(words)
 
             print("NAME LINE :", repr(line))
@@ -224,10 +244,13 @@ class HSCParser(BaseParser):
                 and any(len(w) >= 5 for w in words)
                 and all(w.isalpha() or len(w) == 1 for w in words)
             ):
-                return cleaned
+                candidates.append(cleaned)
 
-        return None
+        if not candidates:
+            return None
 
+        return candidates[-1]
+    
     ####################################################################
     # Main Parser
     ####################################################################

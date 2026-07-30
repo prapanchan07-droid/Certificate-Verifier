@@ -235,7 +235,7 @@ class OCREngine:
             # Detect document type and call parser
 
             upper = full_text.upper()
-            
+
             # Normalize common OCR mistakes
             upper = upper.replace("-", " ")
             upper = upper.replace(".", " ")
@@ -290,15 +290,24 @@ class OCREngine:
                 extracted["raw_text"] = full_text
                 active_parser = None
 
-            # The full-page pass sometimes never captures the English
-            # name text at all (see _retry_candidate_name docstring) --
-            # try a targeted, higher-quality crop of just that region
-            # before giving up on the field.
+            # FIX #2 -- the full-page pass sometimes never captures the
+            # English name text at all (see _retry_candidate_name
+            # docstring). Previously this branch only logged and gave
+            # up; _retry_candidate_name is a fully-built targeted
+            # crop-and-re-OCR of just the name region but was never
+            # actually invoked. Wire it in: attempt a targeted, higher-
+            # quality crop of just that region before giving up on the
+            # field, and use the recovered value if found.
             if (
                 active_parser is not None
                 and not extracted.get("candidate_name")
             ):
-                print("Candidate name missing - retry skipped")
+                retried_name = self._retry_candidate_name(gray, active_parser)
+                if retried_name:
+                    extracted["candidate_name"] = retried_name
+                    print("Candidate name recovered via targeted retry:", retried_name)
+                else:
+                    print("Candidate name missing - retry attempted, still not found")
 
             print("OCR FINAL:", extracted)
             return extracted

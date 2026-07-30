@@ -23,20 +23,27 @@ class NameValidator:
         tamil_name=None
     ):
 
+        # FIX -- `tamil_result` was referenced below before it was ever
+        # defined anywhere in this function, so calling validate()
+        # raised NameError immediately. There's no Tamil-extraction call
+        # happening in this method at all (that lives in
+        # TamilExtractor), so the previous "tamil_name_found" line was
+        # dead code referencing a variable from a different context.
+        # Derive it from the tamil_name argument that's actually passed
+        # in instead.
+        tamil_name_found = bool(tamil_name)
+
         result = {
 
             "candidate_name": None,
-            
+
             "tamil_name": tamil_name,
 
-            "tamil_name_found": tamil_result["found"],
-
+            "tamil_name_found": tamil_name_found,
 
             "ocr_name": ocr_name,
 
             "official_name": official_name,
-
-            "tamil_name": tamil_name,
 
             "similarity": 0.0,
 
