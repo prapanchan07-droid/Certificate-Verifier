@@ -31,9 +31,18 @@ class AIVerificationEngine:
                     continue
                 rect = cv2.minAreaRect(cnt)
                 angle = rect[2]
-                print("Raw angle:", rect[2])
+                # Normalize regardless of OpenCV's minAreaRect angle
+                # convention -- pre-4.5 returns (-90, 0], 4.5+ returns
+                # [0, 90). Without handling BOTH ends, an upright block
+                # can report an angle near 90 under the new convention
+                # and get misread as needing a full 90-degree turn,
+                # which corrupts an already-correct image (confirmed:
+                # this destroyed OCR/QR readability on a certificate
+                # that scanned fine before upgrading opencv-python).
                 if angle < -45:
                     angle += 90
+                elif angle > 45:
+                    angle -= 90
                 angles.append(angle)
 
             if not angles:
