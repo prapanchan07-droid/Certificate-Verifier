@@ -32,10 +32,7 @@ class AIVerificationEngine:
                 rect = cv2.minAreaRect(cnt)
                 angle = rect[2]
                 print("Raw angle:", rect[2])
-                # Normalize OpenCV angle for all platforms
-                if angle > 45:
-                    angle -= 90
-                elif angle < -45:
+                if angle < -45:
                     angle += 90
                 angles.append(angle)
 
